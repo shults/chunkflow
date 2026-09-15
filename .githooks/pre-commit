@@ -1,0 +1,43 @@
+#!/usr/bin/env sh
+# Pre-commit hook: gofmt, go vet, golangci-lint, go mod tidy.
+# Installed via `make setup` (sets core.hooksPath to .githooks).
+# Skip once with:  git commit --no-verify
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Only bother when Go-related files are staged.
+if git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.go$|^go\.(mod|sum)$'; then :; else
+  exit 0
+fi
+
+echo "pre-commit: gofmt"
+staged_go=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.go$' || true)
+if [ -n "$staged_go" ]; then
+  unformatted=$(echo "$staged_go" | xargs gofmt -l)
+  if [ -n "$unformatted" ]; then
+    echo "  files need gofmt (run 'make fmt'):"
+    echo "$unformatted" | sed 's/^/    /'
+    exit 1
+  fi
+fi
+
+echo "pre-commit: go vet"
+go vet ./...
+
+echo "pre-commit: golangci-lint"
+if [ -x ./bin/golangci-lint ]; then
+  ./bin/golangci-lint run ./...
+elif command -v golangci-lint >/dev/null 2>&1; then
+  golangci-lint run ./...
+else
+  echo "  golangci-lint not found; run 'make setup'" >&2
+  exit 1
+fi
+
+echo "pre-commit: go mod tidy"
+go mod tidy
+if ! git diff --quiet --exit-code go.mod go.sum; then
+  echo "  go mod tidy changed go.mod/go.sum; stage the result" >&2
+  exit 1
+fi

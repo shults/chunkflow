@@ -15,6 +15,8 @@ Goal: every future change is guarded by CI, leak detection and coverage.
   - [x] `golangci-lint` with a small, explicit config (`.golangci.yml`)
   - [x] `govulncheck ./...`
   - [x] matrix: Go `1.27.x` and `stable`
+- [x] **Local tooling**: `Makefile` (`setup`, `check`, `test`, `ci`) and a versioned pre-commit hook in `.githooks/`
+      running gofmt, go vet, golangci-lint and go mod tidy
 - [ ] **Goroutine leak detection** with `go.uber.org/goleak`
   - [ ] `goleak.VerifyTestMain(m)` in a `TestMain` for the root package
   - [ ] `defer goleak.VerifyNone(t)` in every test that exercises `WithParallel(n > 1)`

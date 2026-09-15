@@ -47,6 +47,17 @@ func main() {
 
 ```
 
+## Development
+
+```bash
+make setup   # installs golangci-lint and govulncheck into ./bin, enables the git pre-commit hook
+make check   # gofmt, go vet, golangci-lint, go mod tidy — what the hook runs (~0.5s warm)
+make test    # go test -race -shuffle=on
+make ci      # check + test + govulncheck, mirrors the GitHub Actions pipeline
+```
+
+The pre-commit hook lives in `.githooks/` and is enabled via `core.hooksPath`. Skip it once with `git commit --no-verify`.
+
 ## API Reference
 
 ### Constructors
