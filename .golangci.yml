@@ -1,0 +1,40 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - misspell
+    - nolintlint
+    - prealloc
+    - revive
+    - testifylint
+    - unconvert
+    - unparam
+  settings:
+    errcheck:
+      exclude-functions:
+        # yield's return value is intentionally ignored when emitting a terminal error
+        - (func(T) bool)
+    revive:
+      rules:
+        - name: exported
+          arguments: [checkPrivateReceivers]
+  exclusions:
+    generated: lax
+    presets:
+      - common-false-positives
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters: [unparam, revive]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

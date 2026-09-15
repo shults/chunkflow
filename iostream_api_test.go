@@ -57,7 +57,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 			NewIoStream(ctx, seq.Items(1)).
 			MapAsync(func(context.Context, int) (int, error) { return 0, boom }).
 			First()
-		assert.ErrorIs(t, err, boom)
+		require.ErrorIs(t, err, boom)
 		assert.False(t, ok)
 	})
 
@@ -100,7 +100,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 			})
 
 		res, err := chunkflow.NewIoStream2(ctx, src.Seq()).Collect()
-		assert.ErrorIs(t, err, boom)
+		require.ErrorIs(t, err, boom)
 		assert.Equal(t, []int{10, 20}, res)
 	})
 
@@ -130,7 +130,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 				return i, nil
 			}).
 			Count()
-		assert.ErrorIs(t, err, boom)
+		require.ErrorIs(t, err, boom)
 		assert.Equal(t, 2, n)
 	})
 
@@ -146,7 +146,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 				}
 				return nil
 			})
-		assert.ErrorIs(t, err, boom)
+		require.ErrorIs(t, err, boom)
 		assert.Equal(t, []int{1, 2}, seen)
 	})
 }

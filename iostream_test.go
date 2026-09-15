@@ -45,7 +45,7 @@ func TestIoStream_Basic(t *testing.T) {
 			}).
 			Collect()
 
-		assert.ErrorContains(t, err, "test error")
+		require.ErrorContains(t, err, "test error")
 		assert.Equal(t, []int{10}, res) // 2 is not collected as it returned error
 	})
 }
@@ -61,7 +61,7 @@ func TestIoStream_ConcurrentMap(t *testing.T) {
 			}, chunkflow.WithParallel(0)).
 			Collect()
 
-		assert.ErrorContains(t, err, "concurrency must be at least 1")
+		require.ErrorContains(t, err, "concurrency must be at least 1")
 		assert.Empty(t, res)
 	})
 
