@@ -46,7 +46,7 @@ lint: $(LINT) ## Run golangci-lint
 
 .PHONY: tidy-check
 tidy-check: ## Fail if go mod tidy would change go.mod/go.sum
-	@go mod tidy && git diff --quiet --exit-code go.mod go.sum || { echo "go mod tidy changed go.mod/go.sum"; exit 1; }
+	@go mod tidy -diff || { echo "go mod tidy would change go.mod/go.sum; run 'go mod tidy'"; exit 1; }
 
 .PHONY: check
 check: fmt-check vet lint tidy-check ## Everything the pre-commit hook runs

@@ -17,13 +17,13 @@ Goal: every future change is guarded by CI, leak detection and coverage.
   - [x] matrix: Go `1.27.x` and `stable`
 - [x] **Local tooling**: `Makefile` (`setup`, `check`, `test`, `ci`) and a versioned pre-commit hook in `.githooks/`
       running gofmt, go vet, golangci-lint and go mod tidy
-- [ ] **Goroutine leak detection** with `go.uber.org/goleak`
-  - [ ] `goleak.VerifyTestMain(m)` in a `TestMain` for the root package
-  - [ ] `defer goleak.VerifyNone(t)` in every test that exercises `WithParallel(n > 1)`
-  - [ ] scenario: consumer short-circuits (`Take(1)`) after `MapAsync(WithParallel(4))` on `seq.Numbers`
-  - [ ] scenario: context cancelled while a worker is blocked on the output channel
-  - [ ] scenario: one worker fails while the others are still running
-  - [ ] scenario: upstream source yields an error while workers are busy
+- [x] **Goroutine leak detection** with `go.uber.org/goleak`
+  - [x] `goleak.VerifyTestMain(m)` in a `TestMain` for the root package
+  - [x] `defer goleak.VerifyNone(t)` in every test that exercises `WithParallel(n > 1)`
+  - [x] scenario: consumer short-circuits (`Take(1)`) after `MapAsync(WithParallel(4))` on `seq.Numbers`
+  - [x] scenario: context cancelled while a worker is blocked on the output channel
+  - [x] scenario: one worker fails while the others are still running
+  - [x] scenario: upstream source yields an error while workers are busy
 - [ ] **Close coverage gaps** (currently untested)
   - [ ] `IoStream.CircuitBreaker` — trips at threshold, resets on success, rejects threshold < 1
   - [ ] `IoStream.Exec`, `IoStream.Reduce`
