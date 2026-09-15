@@ -33,7 +33,7 @@ Goal: every future change is guarded by CI, leak detection and coverage.
   - [x] error paths of `IoStream.Chunk`, `IoFlatten`, `AllAsync`, `AnyAsync`, `ReduceAsync`
   - [x] `WithLogger` — assert the `ReduceAsync` concurrency warning is emitted
   - [x] `Stream.All` / `Stream.Any` on an empty stream
-- [ ] **Example tests** (`example_test.go`) for `Stream`, `IoStream`, `seq` — they double as godoc
+- [x] **Example tests** (`example_test.go`) for `Stream`, `IoStream`, `seq` — they double as godoc
 - [x] **Package docs**: `doc.go` in the root package with the overview currently only in README
 
 ## Phase 2 — Measure the claims
