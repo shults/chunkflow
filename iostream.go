@@ -406,6 +406,18 @@ func (s IoStream[T]) ForEachAsync(fn func(ctx context.Context, item T) error) er
 	return nil
 }
 
+// Count consumes the entire stream and returns the number of elements seen before the first error.
+func (s IoStream[T]) Count() (int, error) {
+	n := 0
+	for item := range s.seq {
+		if item.err != nil {
+			return n, item.err
+		}
+		n++
+	}
+	return n, nil
+}
+
 // Exec exhausts the stream, discarding values, and returns the first error.
 func (s IoStream[T]) Exec() error {
 	for item := range s.seq {

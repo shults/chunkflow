@@ -146,6 +146,16 @@ func (a Stream[T]) Collect() []T {
 	return result
 }
 
+// Count is a terminal operation that consumes the entire stream and returns the number of elements.
+// Unsafe for infinite streams.
+func (a Stream[T]) Count() int {
+	n := 0
+	for range a.seq {
+		n++
+	}
+	return n
+}
+
 // ForEach is a terminal operation that executes a side effect for each element.
 func (a Stream[T]) ForEach(fn func(T)) {
 	for val := range a.seq {

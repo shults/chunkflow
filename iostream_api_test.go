@@ -115,6 +115,25 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		assert.Equal(t, []int{10, 20, 30, 40, 50}, res)
 	})
 
+	t.Run("Count returns number of elements or count before error", func(t *testing.T) {
+		n, err := chunkflow.NewIoStream(ctx, seq.Range(0, 7)).Count()
+		require.NoError(t, err)
+		assert.Equal(t, 7, n)
+
+		boom := errors.New("boom")
+		n, err = chunkflow.
+			NewIoStream(ctx, seq.Items(1, 2, 3)).
+			MapAsync(func(_ context.Context, i int) (int, error) {
+				if i == 3 {
+					return 0, boom
+				}
+				return i, nil
+			}).
+			Count()
+		assert.ErrorIs(t, err, boom)
+		assert.Equal(t, 2, n)
+	})
+
 	t.Run("ForEachAsync stops on callback error", func(t *testing.T) {
 		boom := errors.New("boom")
 		var seen []int

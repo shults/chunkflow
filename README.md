@@ -113,6 +113,7 @@ consumption and is returned.
 | `Reduce` | `T` | `(T, error)` | Aggregates elements into a single accumulated value. | Requires a finite stream |
 | `ForEach` | - | `error` | Executes a side effect for every element. | Blocks until completion |
 | `Exec` | - | `error` | Exhausts the stream, discarding values. | - |
+| `Count` | `int` | `(int, error)` | Consumes the stream and returns the number of elements. | Requires a finite stream |
 | `Any` | `bool` | `(bool, error)` | Short-circuits and returns true on the first match. | - |
 | `All` | `bool` | `(bool, error)` | Short-circuits and returns false on the first mismatch. | - |
 | `First` | `(T, bool)` | `(T, bool, error)` | Retrieves the first element and short-circuits. | - |

@@ -136,6 +136,11 @@ func TestStream_TerminalOperations(t *testing.T) {
 		assert.Equal(t, []int{1, 2}, res)
 	})
 
+	t.Run("Count should return number of elements", func(t *testing.T) {
+		assert.Equal(t, 4, chunkflow.NewStream(seq.Range(1, 10)).Filter(func(i int) bool { return i%2 == 0 }).Count())
+		assert.Equal(t, 0, chunkflow.NewStream(seq.Items[int]()).Count())
+	})
+
 	t.Run("ForEach should execute side effect", func(t *testing.T) {
 		var sum int
 		chunkflow.NewStream(seq.Items(1, 2, 3)).ForEach(func(i int) {
