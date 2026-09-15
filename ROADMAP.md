@@ -53,6 +53,22 @@ Goal: fix the shapes that are awkward now, while nobody depends on them.
 - [ ] `Reduce(init, fn(acc, item))` — flip the accumulator to Go's conventional order on both stream types
 - [ ] recover panics inside worker goroutines and surface them as errors (a panic in a worker currently kills the process)
 - [ ] `WithOrdered()` option for `MapAsync` / `FilterAsync` — preserve input order under `WithParallel(n > 1)`
+  - sliding window: `n` workers pull freely, but results are emitted strictly in source order;
+    a finished item whose predecessors are still running waits in a reorder buffer
+  - bounded read-ahead via `WithWindow(k)` (default `k = 2n`): at most `k` items may be pulled from
+    the source and not yet emitted; when the window is full, idle workers wait instead of pulling.
+    Keeps memory O(k) even when the head-of-line item is slow
+  - implementation sketch: the feeder numbers items and creates a one-shot result channel per item,
+    pushing those channels in order into a queue of capacity `k` (this is the backpressure); workers
+    take `(item, resultChan)` from the input channel and fill it; the emitter reads the queue in order
+    and blocks on each channel
+  - errors are ordinary results at their own position, so a downstream `CircuitBreaker` sees failures
+    in source order rather than arrival order
+  - cost to document: head-of-line blocking — one slow item stalls emission (and, once the window is
+    full, the workers) behind it; that is the price of ordering, hence opt-in, never default
+  - tests: order preserved under random per-item delays; window bound respected (source pulls never
+    exceed emitted + k); leak-free on short-circuit and cancellation (goleak); `Take(1)` after an
+    ordered stage stops the pool
 - [ ] decide the fate of `WithLogger`: remove it, or give it real work (worker start/stop, breaker trips)
 - [ ] document (or unify) `Stream.Chunk` panicking vs `IoStream.Chunk` emitting an error on invalid size
 - [ ] tag `v0.1.0`
