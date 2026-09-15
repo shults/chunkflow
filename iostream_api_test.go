@@ -1,8 +1,10 @@
 package chunkflow_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -193,6 +195,26 @@ func TestIoStream_Options(t *testing.T) {
 		assert.False(t, timedOut.Load(), "not all workers ran concurrently; options were not inherited")
 	})
 
+	t.Run("WithDiscardLogger silences a logger set via Opts", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+		// ReduceAsync warns when asked for concurrency > 1
+		_, err := chunkflow.NewIoStream(ctx, seq.Items(1, 2)).
+			Opts(chunkflow.WithLogger(logger)).
+			ReduceAsync(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil }, chunkflow.WithParallel(2))
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "level=WARN")
+
+		buf.Reset()
+		_, err = chunkflow.NewIoStream(ctx, seq.Items(1, 2)).
+			Opts(chunkflow.WithLogger(logger)).
+			ReduceAsync(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil },
+				chunkflow.WithParallel(2), chunkflow.WithDiscardLogger())
+		require.NoError(t, err)
+		assert.Empty(t, buf.String())
+	})
+
 	t.Run("FilterAsync rejects concurrency below 1", func(t *testing.T) {
 		_, err := chunkflow.
 			NewIoStream(ctx, seq.Items(1)).
@@ -206,5 +228,26 @@ func TestIoStream_Options(t *testing.T) {
 		cancel()
 		_, err := chunkflow.NewIoStream(cctx, seq.Numbers(0)).Take(3).Collect()
 		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("cancelled context surfaces as error through parallel stages", func(t *testing.T) {
+		// Workers and the feeder may all pick the ctx.Done() branch and exit without
+		// emitting anything; the stage must still report the cancellation.
+		for range 50 {
+			cctx, cancel := context.WithCancel(ctx)
+			cancel()
+
+			_, err := chunkflow.
+				NewIoStream(cctx, seq.Range(0, 100)).
+				MapAsync(func(_ context.Context, i int) (int, error) { return i, nil }, chunkflow.WithParallel(4)).
+				Collect()
+			require.ErrorIs(t, err, context.Canceled)
+
+			_, err = chunkflow.
+				NewIoStream(cctx, seq.Range(0, 100)).
+				FilterAsync(func(context.Context, int) (bool, error) { return true, nil }, chunkflow.WithParallel(4)).
+				Collect()
+			require.ErrorIs(t, err, context.Canceled)
+		}
 	})
 }

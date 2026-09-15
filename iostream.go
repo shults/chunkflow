@@ -2,8 +2,8 @@ package chunkflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io"
 	"iter"
 	"log/slog"
 	"sync"
@@ -12,6 +12,13 @@ import (
 // IoStream represents a lazily evaluated, context-aware pipeline whose elements may
 // carry errors. It mirrors the Stream API; every method that accepts a user callback
 // has an *Async counterpart that receives a context and may return an error.
+//
+// Error semantics: an error produced by the source or by a callback travels down the
+// pipeline as an element. Intermediate operations pass it through untouched and keep
+// processing the remaining input; they operate on values only and never interpret
+// errors. CircuitBreaker may mark an error as tolerated (see ErrSuppressed). Terminal
+// operations skip elements whose error matches ErrSuppressed and stop at the first
+// other error, so a pipeline without a CircuitBreaker behaves as "fail fast".
 type IoStream[T any] struct {
 	options options
 	ctx     context.Context
@@ -39,17 +46,22 @@ func WithParallel(concurrency int) Option {
 	}
 }
 
-// WithLogger sets the logger used for diagnostics.
+// WithLogger sets the logger used for diagnostics. Diagnostics are discarded by default.
 func WithLogger(logger *slog.Logger) Option {
 	return func(o *options) {
 		o.logger = logger
 	}
 }
 
+// WithDiscardLogger drops all diagnostics. Handy to silence a logger previously set via Opts.
+func WithDiscardLogger() Option {
+	return WithLogger(slog.New(slog.DiscardHandler))
+}
+
 func defaultOptions() options {
 	return options{
 		concurrency: 1,
-		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:      slog.New(slog.DiscardHandler),
 	}
 }
 
@@ -104,12 +116,13 @@ func (s IoStream[T]) getOptions(opts ...Option) options {
 }
 
 // derive builds a new stream of another element type that inherits ctx and options.
-func derive[T, R any](s IoStream[T], seq iter.Seq[result[R]]) IoStream[R] {
+func (s IoStream[T]) derive[R any](seq iter.Seq[result[R]]) IoStream[R] {
 	return IoStream[R]{options: s.options, ctx: s.ctx, seq: seq}
 }
 
-func errStream[T, R any](s IoStream[T], err error) IoStream[R] {
-	return derive[T, R](s, func(yield func(result[R]) bool) {
+// errStream builds a stream that emits a single error and ends.
+func (s IoStream[T]) errStream[R any](err error) IoStream[R] {
+	return s.derive(func(yield func(result[R]) bool) {
 		yield(result[R]{err: err})
 	})
 }
@@ -131,29 +144,27 @@ func (s IoStream[T]) Map[R any](mapFn func(T) R) IoStream[R] {
 func (s IoStream[T]) MapAsync[R any](mapFn func(ctx context.Context, item T) (R, error), opts ...Option) IoStream[R] {
 	o := s.getOptions(opts...)
 	if o.concurrency < 1 {
-		return errStream[T, R](s, fmt.Errorf("concurrency must be at least 1"))
+		return s.errStream[R](fmt.Errorf("concurrency must be at least 1"))
 	}
 
 	if o.concurrency == 1 {
-		return derive[T, R](s, func(yield func(result[R]) bool) {
+		return s.derive(func(yield func(result[R]) bool) {
 			for item := range s.seq {
 				if item.err != nil {
-					yield(result[R]{err: item.err})
-					return
+					if !yield(result[R]{err: item.err}) {
+						return
+					}
+					continue
 				}
 				val, err := mapFn(s.ctx, item.value)
-				if err != nil {
-					yield(result[R]{err: err})
-					return
-				}
-				if !yield(result[R]{value: val}) {
+				if !yield(result[R]{value: val, err: err}) {
 					return
 				}
 			}
 		})
 	}
 
-	return derive[T, R](s, func(yield func(result[R]) bool) {
+	return s.derive(func(yield func(result[R]) bool) {
 		ctx, cancel := context.WithCancel(s.ctx)
 		defer cancel()
 
@@ -161,13 +172,14 @@ func (s IoStream[T]) MapAsync[R any](mapFn func(ctx context.Context, item T) (R,
 		runConcurrent(ctx, s.seq, o.concurrency, mapFn, outChan)
 
 		for res := range outChan {
-			if res.err != nil {
-				yield(res)
-				return
-			}
 			if !yield(res) {
 				return
 			}
+		}
+		// Workers and the feeder bail out silently on ctx.Done(); make sure the
+		// cancellation still surfaces to the consumer as an error.
+		if err := s.ctx.Err(); err != nil {
+			yield(result[R]{err: err})
 		}
 	})
 }
@@ -185,20 +197,24 @@ func (s IoStream[T]) Filter(predicate func(T) bool) IoStream[T] {
 func (s IoStream[T]) FilterAsync(predicate func(ctx context.Context, item T) (bool, error), opts ...Option) IoStream[T] {
 	o := s.getOptions(opts...)
 	if o.concurrency < 1 {
-		return errStream[T, T](s, fmt.Errorf("concurrency must be at least 1"))
+		return s.errStream[T](fmt.Errorf("concurrency must be at least 1"))
 	}
 
 	if o.concurrency == 1 {
-		return derive[T, T](s, func(yield func(result[T]) bool) {
+		return s.derive(func(yield func(result[T]) bool) {
 			for item := range s.seq {
 				if item.err != nil {
-					yield(item)
-					return
+					if !yield(item) {
+						return
+					}
+					continue
 				}
 				match, err := predicate(s.ctx, item.value)
 				if err != nil {
-					yield(result[T]{err: err})
-					return
+					if !yield(result[T]{err: err}) {
+						return
+					}
+					continue
 				}
 				if match && !yield(item) {
 					return
@@ -212,7 +228,7 @@ func (s IoStream[T]) FilterAsync(predicate func(ctx context.Context, item T) (bo
 		match bool
 	}
 
-	return derive[T, T](s, func(yield func(result[T]) bool) {
+	return s.derive(func(yield func(result[T]) bool) {
 		ctx, cancel := context.WithCancel(s.ctx)
 		defer cancel()
 
@@ -224,30 +240,35 @@ func (s IoStream[T]) FilterAsync(predicate func(ctx context.Context, item T) (bo
 
 		for res := range outChan {
 			if res.err != nil {
-				yield(result[T]{err: res.err})
-				return
+				if !yield(result[T]{err: res.err}) {
+					return
+				}
+				continue
 			}
 			if res.value.match && !yield(result[T]{value: res.value.val}) {
 				return
 			}
 		}
+		if err := s.ctx.Err(); err != nil {
+			yield(result[T]{err: err})
+		}
 	})
 }
 
 // Take consumes at most nr elements from the stream and then short-circuits.
+// Errors are passed through and do not count towards nr.
 func (s IoStream[T]) Take(nr int) IoStream[T] {
-	return derive[T, T](s, func(yield func(result[T]) bool) {
+	return s.derive(func(yield func(result[T]) bool) {
 		if nr <= 0 {
 			return
 		}
 		count := 0
 		for item := range s.seq {
-			if item.err != nil {
-				yield(item)
-				return
-			}
 			if !yield(item) {
 				return
+			}
+			if item.err != nil {
+				continue
 			}
 			count++
 			if count == nr {
@@ -258,13 +279,16 @@ func (s IoStream[T]) Take(nr int) IoStream[T] {
 }
 
 // Skip bypasses the first nr elements and emits the remainder of the stream.
+// Errors are passed through and do not count towards nr.
 func (s IoStream[T]) Skip(nr int) IoStream[T] {
-	return derive[T, T](s, func(yield func(result[T]) bool) {
+	return s.derive(func(yield func(result[T]) bool) {
 		skipped := 0
 		for item := range s.seq {
 			if item.err != nil {
-				yield(item)
-				return
+				if !yield(item) {
+					return
+				}
+				continue
 			}
 			if skipped < nr {
 				skipped++
@@ -279,17 +303,21 @@ func (s IoStream[T]) Skip(nr int) IoStream[T] {
 
 // Chunk groups elements into slices of the given size.
 // The final chunk may contain fewer elements than size. Emits an error if size < 1.
+// Errors are passed through immediately; the partially filled chunk is kept and
+// continues to accumulate subsequent elements.
 func (s IoStream[T]) Chunk[R []T](size int) IoStream[R] {
 	if size < 1 {
-		return errStream[T, R](s, fmt.Errorf("chunk size must be >= 1"))
+		return s.errStream[R](fmt.Errorf("chunk size must be >= 1"))
 	}
 
-	return derive[T, R](s, func(yield func(result[R]) bool) {
+	return s.derive(func(yield func(result[R]) bool) {
 		chunk := make([]T, 0, size)
 		for item := range s.seq {
 			if item.err != nil {
-				yield(result[R]{err: item.err})
-				return
+				if !yield(result[R]{err: item.err}) {
+					return
+				}
+				continue
 			}
 			chunk = append(chunk, item.value)
 			if len(chunk) == size {
@@ -312,17 +340,34 @@ func (s IoStream[T]) Through[R any](transform func(IoStream[T]) IoStream[R]) IoS
 	return transform(s)
 }
 
-// CircuitBreaker interrupts the stream with a critical error if maxConsecutiveFailures
-// errors occur in a row. Errors below the threshold are suppressed.
+// CircuitBreaker tolerates up to maxConsecutiveFailures-1 errors in a row and trips on
+// the next one, interrupting the stream with a wrapped error. A successful element resets
+// the counter.
+//
+// Tolerated errors are not dropped: they are re-emitted wrapped in an error matching
+// ErrSuppressed so that downstream terminal operations skip them while consumers of
+// Seq() can still observe them. Errors already marked as suppressed by an upstream
+// breaker pass through without affecting the counter. Context errors (context.Canceled,
+// context.DeadlineExceeded) are never suppressed.
+//
+// After a parallel stage the notion of "consecutive" follows arrival order, not source order.
 func (s IoStream[T]) CircuitBreaker(maxConsecutiveFailures int) IoStream[T] {
 	if maxConsecutiveFailures < 1 {
-		return errStream[T, T](s, fmt.Errorf("threshold must be >= 1"))
+		return s.errStream[T](fmt.Errorf("threshold must be >= 1"))
 	}
 
-	return derive[T, T](s, func(yield func(result[T]) bool) {
+	return s.derive(func(yield func(result[T]) bool) {
 		consecutiveFailures := 0
 		for item := range s.seq {
-			if item.err != nil {
+			switch {
+			case item.err == nil:
+				consecutiveFailures = 0
+			case isSuppressed(item.err):
+				// already handled by an upstream breaker; not ours to count
+			case errors.Is(item.err, context.Canceled) || errors.Is(item.err, context.DeadlineExceeded):
+				yield(item)
+				return
+			default:
 				consecutiveFailures++
 				if consecutiveFailures >= maxConsecutiveFailures {
 					yield(result[T]{
@@ -331,9 +376,13 @@ func (s IoStream[T]) CircuitBreaker(maxConsecutiveFailures int) IoStream[T] {
 					})
 					return
 				}
-				continue
+				item = result[T]{err: &suppressedError{
+					err:                 item.err,
+					consecutiveFailures: consecutiveFailures,
+					threshold:           maxConsecutiveFailures,
+				}}
 			}
-			consecutiveFailures = 0
+
 			if !yield(item) {
 				return
 			}
@@ -344,11 +393,13 @@ func (s IoStream[T]) CircuitBreaker(maxConsecutiveFailures int) IoStream[T] {
 // IoFlatten unwraps a stream of slices into a flat stream of individual elements.
 // It is the IoStream counterpart of Flatten; use it with Through.
 func IoFlatten[E any](stream IoStream[[]E]) IoStream[E] {
-	return derive[[]E, E](stream, func(yield func(result[E]) bool) {
+	return stream.derive(func(yield func(result[E]) bool) {
 		for chunk := range stream.seq {
 			if chunk.err != nil {
-				yield(result[E]{err: chunk.err})
-				return
+				if !yield(result[E]{err: chunk.err}) {
+					return
+				}
+				continue
 			}
 			for _, val := range chunk.value {
 				if !yield(result[E]{value: val}) {
@@ -363,16 +414,41 @@ func IoFlatten[E any](stream IoStream[[]E]) IoStream[E] {
 // Terminal operations
 // ---------------------------------------------------------------------------
 
-// Seq returns the stream as a native (value, error) iterator. Iteration stops
-// after the first error is yielded.
+// Seq returns the stream as a native (value, error) iterator. Elements tolerated by a
+// CircuitBreaker are yielded with an error matching ErrSuppressed; iteration stops after
+// the first error that is not suppressed.
 func (s IoStream[T]) Seq() iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		for item := range s.seq {
-			if !yield(item.value, item.err) || item.err != nil {
+			if !yield(item.value, item.err) {
+				return
+			}
+			if item.err != nil && !isSuppressed(item.err) {
 				return
 			}
 		}
 	}
+}
+
+// each drives every terminal operation: it skips elements carrying a suppressed error,
+// returns the first other error, and stops early when fn returns false.
+func (s IoStream[T]) each(fn func(T) (bool, error)) error {
+	for item := range s.seq {
+		if item.err != nil {
+			if isSuppressed(item.err) {
+				continue
+			}
+			return item.err
+		}
+		next, err := fn(item.value)
+		if err != nil {
+			return err
+		}
+		if !next {
+			return nil
+		}
+	}
+	return nil
 }
 
 // Collect materializes the stream into a slice. Elements collected before an error
@@ -395,37 +471,24 @@ func (s IoStream[T]) ForEach(fn func(T)) error {
 
 // ForEachAsync executes a context-aware side effect for each element and returns the first error.
 func (s IoStream[T]) ForEachAsync(fn func(ctx context.Context, item T) error) error {
-	for item := range s.seq {
-		if item.err != nil {
-			return item.err
-		}
-		if err := fn(s.ctx, item.value); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.each(func(item T) (bool, error) {
+		return true, fn(s.ctx, item)
+	})
 }
 
 // Count consumes the entire stream and returns the number of elements seen before the first error.
 func (s IoStream[T]) Count() (int, error) {
 	n := 0
-	for item := range s.seq {
-		if item.err != nil {
-			return n, item.err
-		}
+	err := s.each(func(T) (bool, error) {
 		n++
-	}
-	return n, nil
+		return true, nil
+	})
+	return n, err
 }
 
 // Exec exhausts the stream, discarding values, and returns the first error.
 func (s IoStream[T]) Exec() error {
-	for item := range s.seq {
-		if item.err != nil {
-			return item.err
-		}
-	}
-	return nil
+	return s.each(func(T) (bool, error) { return true, nil })
 }
 
 // Reduce aggregates the stream into a single value.
@@ -444,16 +507,12 @@ func (s IoStream[T]) ReduceAsync(init T, fn func(ctx context.Context, item, acc 
 	}
 
 	acc := init
-	for item := range s.seq {
-		if item.err != nil {
-			return acc, item.err
-		}
+	err := s.each(func(item T) (bool, error) {
 		var err error
-		if acc, err = fn(s.ctx, item.value, acc); err != nil {
-			return acc, err
-		}
-	}
-	return acc, nil
+		acc, err = fn(s.ctx, item, acc)
+		return true, err
+	})
+	return acc, err
 }
 
 // All verifies whether all elements satisfy the predicate. Short-circuits on the first mismatch.
@@ -465,19 +524,19 @@ func (s IoStream[T]) All(predicate func(T) bool) (bool, error) {
 
 // AllAsync verifies whether all elements satisfy the context-aware predicate.
 func (s IoStream[T]) AllAsync(predicate func(ctx context.Context, item T) (bool, error)) (bool, error) {
-	for item := range s.seq {
-		if item.err != nil {
-			return false, item.err
-		}
-		match, err := predicate(s.ctx, item.value)
+	all := true
+	err := s.each(func(item T) (bool, error) {
+		match, err := predicate(s.ctx, item)
 		if err != nil {
 			return false, err
 		}
-		if !match {
-			return false, nil
-		}
+		all = match
+		return match, nil
+	})
+	if err != nil {
+		return false, err
 	}
-	return true, nil
+	return all, nil
 }
 
 // Any verifies whether at least one element satisfies the predicate. Short-circuits on the first match.
@@ -489,45 +548,45 @@ func (s IoStream[T]) Any(predicate func(T) bool) (bool, error) {
 
 // AnyAsync verifies whether at least one element satisfies the context-aware predicate.
 func (s IoStream[T]) AnyAsync(predicate func(ctx context.Context, item T) (bool, error)) (bool, error) {
-	for item := range s.seq {
-		if item.err != nil {
-			return false, item.err
-		}
-		match, err := predicate(s.ctx, item.value)
+	found := false
+	err := s.each(func(item T) (bool, error) {
+		match, err := predicate(s.ctx, item)
 		if err != nil {
 			return false, err
 		}
-		if match {
-			return true, nil
-		}
+		found = match
+		return !match, nil
+	})
+	if err != nil {
+		return false, err
 	}
-	return false, nil
+	return found, nil
 }
 
 // First consumes at most one element. Returns (zero, false, nil) for an empty stream.
 func (s IoStream[T]) First() (T, bool, error) {
-	for item := range s.seq {
-		if item.err != nil {
-			var zero T
-			return zero, false, item.err
-		}
-		return item.value, true, nil
+	var first T
+	ok := false
+	err := s.each(func(item T) (bool, error) {
+		first, ok = item, true
+		return false, nil
+	})
+	if err != nil {
+		var zero T
+		return zero, false, err
 	}
-	var zero T
-	return zero, false, nil
+	return first, ok, nil
 }
 
 // Last consumes the entire stream and returns the final element.
 func (s IoStream[T]) Last() (T, bool, error) {
 	var last T
-	var ok bool
-	for item := range s.seq {
-		if item.err != nil {
-			return last, ok, item.err
-		}
-		last, ok = item.value, true
-	}
-	return last, ok, nil
+	ok := false
+	err := s.each(func(item T) (bool, error) {
+		last, ok = item, true
+		return true, nil
+	})
+	return last, ok, err
 }
 
 // ---------------------------------------------------------------------------
@@ -535,8 +594,9 @@ func (s IoStream[T]) Last() (T, bool, error) {
 // ---------------------------------------------------------------------------
 
 // runConcurrent wires a feeder goroutine, a worker pool and a closer:
-// the feeder reads inputSeq into inChan, workers apply workerFn and push to outputChan,
-// and the closer closes outputChan once all workers exit.
+// the feeder reads inputSeq into inChan (forwarding upstream errors straight to
+// outputChan), workers apply workerFn and push to outputChan, and the closer closes
+// outputChan once all workers exit.
 func runConcurrent[T any, R any](
 	ctx context.Context,
 	inputSeq iter.Seq[result[T]],
@@ -546,15 +606,22 @@ func runConcurrent[T any, R any](
 ) {
 	inChan := make(chan T, concurrency)
 
+	// Every goroutine that may write to outputChan (feeder + workers) is tracked by wg,
+	// so the closer never closes the channel while a writer is still alive.
+	var wg sync.WaitGroup
+	wg.Add(1 + concurrency)
+
 	go func() {
+		defer wg.Done()
 		defer close(inChan)
 		for item := range inputSeq {
 			if item.err != nil {
 				select {
 				case outputChan <- result[R]{err: item.err}:
 				case <-ctx.Done():
+					return
 				}
-				return
+				continue
 			}
 			select {
 			case inChan <- item.value:
@@ -564,8 +631,6 @@ func runConcurrent[T any, R any](
 		}
 	}()
 
-	var wg sync.WaitGroup
-	wg.Add(concurrency)
 	for range concurrency {
 		go func() {
 			defer wg.Done()

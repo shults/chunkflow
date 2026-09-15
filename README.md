@@ -102,8 +102,33 @@ Every method below exists with the same name and shape on both `Stream[T]` and `
 | --- | --- | --- |
 | `MapAsync` | `MapAsync[R](func(ctx, T) (R, error), ...Option)` | Like `Map`, but may fail and run on `WithParallel(n)` workers (order not preserved for n > 1). |
 | `FilterAsync` | `FilterAsync(func(ctx, T) (bool, error), ...Option)` | Like `Filter`, with the same error and concurrency semantics as `MapAsync`. |
-| `CircuitBreaker` | `CircuitBreaker(maxConsecutiveFailures int)` | Suppresses errors until `n` occur in a row, then aborts the pipeline. |
-| `Opts` | `Opts(...Option)` | Sets default options (`WithParallel`, `WithLogger`) inherited by all downstream operations. |
+| `CircuitBreaker` | `CircuitBreaker(maxConsecutiveFailures int)` | Tolerates up to `n-1` errors in a row by re-emitting them marked as `ErrSuppressed`; trips on the `n`-th. Context errors are never suppressed. |
+| `Opts` | `Opts(...Option)` | Sets default options (`WithParallel`, `WithLogger`, `WithDiscardLogger`) inherited by all downstream operations. |
+
+#### Error semantics in `IoStream`
+
+An error from the source or from a callback travels down the pipeline **as an element**. Intermediate
+operations pass it through and keep processing the remaining input (`Take`/`Skip` do not count errors,
+`Chunk` keeps its partial buffer). Terminal operations stop at the first error they see, so a pipeline
+without a `CircuitBreaker` fails fast, and the source is not consumed past the failing element.
+
+`CircuitBreaker` does not drop errors. Below its threshold it re-emits each error wrapped so that it
+matches both `ErrSuppressed` and the original error. Terminal operations
+skip such elements instead of stopping, so nothing is logged and nothing is lost: iterate `Seq()`
+and check `errors.Is(err, chunkflow.ErrSuppressed)` to observe what was tolerated.
+
+```go
+for v, err := range stream.CircuitBreaker(5).Seq() {
+    switch {
+    case err == nil:
+        use(v)
+    case errors.Is(err, chunkflow.ErrSuppressed):
+        metrics.Inc("tolerated") // original error is still in the chain: errors.Is(err, io.EOF) works
+    default:
+        return err // fatal: breaker tripped, context cancelled, ...
+    }
+}
+```
 
 ### Top-Level Functions
 

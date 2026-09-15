@@ -25,7 +25,10 @@ Goal: every future change is guarded by CI, leak detection and coverage.
   - [x] scenario: one worker fails while the others are still running
   - [x] scenario: upstream source yields an error while workers are busy
 - [ ] **Close coverage gaps** (currently untested)
-  - [ ] `IoStream.CircuitBreaker` — trips at threshold, resets on success, rejects threshold < 1
+  - [x] `IoStream.CircuitBreaker` — trips at threshold, resets on success, rejects threshold < 1
+        (fixed on the way: intermediate stages now forward errors instead of ending the stream, so the
+        breaker works anywhere in the chain; tolerated errors are re-emitted marked as `ErrSuppressed` and
+        skipped by terminals, observable via `Seq()` + `errors.Is(err, ErrSuppressed)`)
   - [ ] `IoStream.Exec`, `IoStream.Reduce`
   - [ ] error paths of `IoStream.Chunk`, `IoFlatten`, `AllAsync`, `AnyAsync`, `ReduceAsync`
   - [ ] `WithLogger` — assert the `ReduceAsync` concurrency warning is emitted
@@ -50,7 +53,7 @@ Goal: fix the shapes that are awkward now, while nobody depends on them.
 - [ ] `Reduce(init, fn(acc, item))` — flip the accumulator to Go's conventional order on both stream types
 - [ ] recover panics inside worker goroutines and surface them as errors (a panic in a worker currently kills the process)
 - [ ] `WithOrdered()` option for `MapAsync` / `FilterAsync` — preserve input order under `WithParallel(n > 1)`
-- [ ] decide the fate of `WithLogger`: remove it, or give it real work (worker start/stop, circuit breaker trips)
+- [ ] decide the fate of `WithLogger`: remove it, or give it real work (worker start/stop, breaker trips)
 - [ ] document (or unify) `Stream.Chunk` panicking vs `IoStream.Chunk` emitting an error on invalid size
 - [ ] tag `v0.1.0`
 
