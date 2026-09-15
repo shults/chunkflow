@@ -108,6 +108,16 @@ func TestStream_TerminalOperations(t *testing.T) {
 		assert.Equal(t, 3, evaluatedItems, "All failed to short-circuit the pipeline")
 	})
 
+	t.Run("All returns true when every element matches", func(t *testing.T) {
+		assert.True(t, chunkflow.NewStream(seq.Items(2, 4, 6)).All(func(i int) bool { return i%2 == 0 }))
+		assert.True(t, chunkflow.NewStream(seq.Items[int]()).All(func(int) bool { return false }), "vacuous truth on empty stream")
+	})
+
+	t.Run("Any returns false when nothing matches", func(t *testing.T) {
+		assert.False(t, chunkflow.NewStream(seq.Items(1, 3, 5)).Any(func(i int) bool { return i%2 == 0 }))
+		assert.False(t, chunkflow.NewStream(seq.Items[int]()).Any(func(int) bool { return true }))
+	})
+
 	t.Run("First on non-empty stream returns element", func(t *testing.T) {
 		val, ok := chunkflow.NewStream(seq.Items(99, 100)).First()
 		assert.True(t, ok)
@@ -199,5 +209,53 @@ func TestStream_FlattenAndThrough(t *testing.T) {
 			Collect()
 
 		assert.Equal(t, []string{"c"}, res)
+	})
+}
+
+// TestStream_ShortCircuitPropagates verifies that every intermediate operation stops
+// pulling from an infinite source once the consumer has what it needs.
+func TestStream_ShortCircuitPropagates(t *testing.T) {
+	stages := map[string]func(chunkflow.Stream[int]) chunkflow.Stream[int]{
+		"Map":    func(s chunkflow.Stream[int]) chunkflow.Stream[int] { return s.Map(func(i int) int { return i }) },
+		"Filter": func(s chunkflow.Stream[int]) chunkflow.Stream[int] { return s.Filter(func(int) bool { return true }) },
+		"Take":   func(s chunkflow.Stream[int]) chunkflow.Stream[int] { return s.Take(1000) },
+		"Skip":   func(s chunkflow.Stream[int]) chunkflow.Stream[int] { return s.Skip(1) },
+		"Chunk+Flatten": func(s chunkflow.Stream[int]) chunkflow.Stream[int] {
+			return s.Chunk[[]int](3).Through(chunkflow.Flatten)
+		},
+	}
+
+	for name, stage := range stages {
+		t.Run(name, func(t *testing.T) {
+			pulled := 0
+			src := chunkflow.NewStream(func(yield func(int) bool) {
+				for i := 0; ; i++ {
+					pulled++
+					if !yield(i) {
+						return
+					}
+				}
+			})
+
+			_, ok := src.Through(stage).First()
+			assert.True(t, ok)
+			assert.LessOrEqual(t, pulled, 4, "stage kept pulling after First() returned")
+		})
+	}
+
+	t.Run("Chunk stops after the consumer takes one chunk", func(t *testing.T) {
+		pulled := 0
+		src := chunkflow.NewStream(func(yield func(int) bool) {
+			for i := 0; ; i++ {
+				pulled++
+				if !yield(i) {
+					return
+				}
+			}
+		})
+		chunk, ok := src.Chunk(3).First()
+		assert.True(t, ok)
+		assert.Equal(t, []int{0, 1, 2}, chunk)
+		assert.Equal(t, 3, pulled)
 	})
 }

@@ -24,15 +24,15 @@ Goal: every future change is guarded by CI, leak detection and coverage.
   - [x] scenario: context cancelled while a worker is blocked on the output channel
   - [x] scenario: one worker fails while the others are still running
   - [x] scenario: upstream source yields an error while workers are busy
-- [ ] **Close coverage gaps** (currently untested)
+- [x] **Close coverage gaps** (statement coverage is now 100%)
   - [x] `IoStream.CircuitBreaker` — trips at threshold, resets on success, rejects threshold < 1
         (fixed on the way: intermediate stages now forward errors instead of ending the stream, so the
         breaker works anywhere in the chain; tolerated errors are re-emitted marked as `ErrSuppressed` and
         skipped by terminals, observable via `Seq()` + `errors.Is(err, ErrSuppressed)`)
-  - [ ] `IoStream.Exec`, `IoStream.Reduce`
-  - [ ] error paths of `IoStream.Chunk`, `IoFlatten`, `AllAsync`, `AnyAsync`, `ReduceAsync`
-  - [ ] `WithLogger` — assert the `ReduceAsync` concurrency warning is emitted
-  - [ ] `Stream.All` / `Stream.Any` on an empty stream
+  - [x] `IoStream.Exec`, `IoStream.Reduce`
+  - [x] error paths of `IoStream.Chunk`, `IoFlatten`, `AllAsync`, `AnyAsync`, `ReduceAsync`
+  - [x] `WithLogger` — assert the `ReduceAsync` concurrency warning is emitted
+  - [x] `Stream.All` / `Stream.Any` on an empty stream
 - [ ] **Example tests** (`example_test.go`) for `Stream`, `IoStream`, `seq` — they double as godoc
 - [ ] **Package docs**: `doc.go` in the root package with the overview currently only in README
 

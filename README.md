@@ -150,8 +150,8 @@ consumption and is returned.
 | `ForEach` | - | `error` | Executes a side effect for every element. | Blocks until completion |
 | `Exec` | - | `error` | Exhausts the stream, discarding values. | - |
 | `Count` | `int` | `(int, error)` | Consumes the stream and returns the number of elements. | Requires a finite stream |
-| `Any` | `bool` | `(bool, error)` | Short-circuits and returns true on the first match. | - |
-| `All` | `bool` | `(bool, error)` | Short-circuits and returns false on the first mismatch. | - |
+| `Any` | `bool` | `(bool, error)` | Short-circuits and returns true on the first match. **Empty stream: `false`.** | - |
+| `All` | `bool` | `(bool, error)` | Short-circuits and returns false on the first mismatch. **Empty stream: `true`** (vacuous truth). | - |
 | `First` | `(T, bool)` | `(T, bool, error)` | Retrieves the first element and short-circuits. | - |
 | `Last` | `(T, bool)` | `(T, bool, error)` | Consumes the entire stream to return the final element. | Requires a finite stream |
 | `Seq` | `iter.Seq[T]` | `iter.Seq2[T, error]` | Exposes the pipeline as a native iterator. | - |

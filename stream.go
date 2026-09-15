@@ -116,6 +116,10 @@ func (a Stream[T]) Seq() iter.Seq[T] {
 
 // All is a terminal operation that verifies if all elements satisfy the predicate.
 // Returns false and short-circuits on the first mismatch.
+//
+// On an empty stream All returns true (vacuous truth): there is no element that
+// could violate the predicate. This mirrors slices.ContainsFunc's complement and
+// keeps All(p) == !Any(!p) for every stream.
 func (a Stream[T]) All(predicate func(T) bool) bool {
 	for val := range a.seq {
 		if !predicate(val) {
@@ -127,6 +131,8 @@ func (a Stream[T]) All(predicate func(T) bool) bool {
 
 // Any is a terminal operation that verifies if at least one element satisfies the predicate.
 // Returns true and short-circuits on the first match.
+//
+// On an empty stream Any returns false: there is no element that could be a witness.
 func (a Stream[T]) Any(predicate func(T) bool) bool {
 	for val := range a.seq {
 		if predicate(val) {

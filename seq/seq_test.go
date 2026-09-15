@@ -28,6 +28,7 @@ func TestRange(t *testing.T) {
 	assert.Equal(t, []int{1, 2, 3}, slices.Collect(seq.Range(1, 4)))
 	assert.Empty(t, slices.Collect(seq.Range(4, 1)), "from >= to yields nothing")
 	assert.Equal(t, []uint8{250, 251}, slices.Collect(seq.Range[uint8](250, 252)))
+	assert.Equal(t, []int{1, 2}, take(2, seq.Range(1, 10)), "must honour early termination")
 }
 
 func TestRangeInclusive(t *testing.T) {

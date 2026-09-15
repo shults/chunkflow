@@ -516,6 +516,9 @@ func (s IoStream[T]) ReduceAsync(init T, fn func(ctx context.Context, item, acc 
 }
 
 // All verifies whether all elements satisfy the predicate. Short-circuits on the first mismatch.
+//
+// On an empty stream, or one consisting only of suppressed errors, All returns true
+// (vacuous truth): no element could violate the predicate. All(p) == !Any(!p) always holds.
 func (s IoStream[T]) All(predicate func(T) bool) (bool, error) {
 	return s.AllAsync(func(_ context.Context, item T) (bool, error) {
 		return predicate(item), nil
@@ -540,6 +543,9 @@ func (s IoStream[T]) AllAsync(predicate func(ctx context.Context, item T) (bool,
 }
 
 // Any verifies whether at least one element satisfies the predicate. Short-circuits on the first match.
+//
+// On an empty stream, or one consisting only of suppressed errors, Any returns false:
+// no element could be a witness.
 func (s IoStream[T]) Any(predicate func(T) bool) (bool, error) {
 	return s.AnyAsync(func(_ context.Context, item T) (bool, error) {
 		return predicate(item), nil
