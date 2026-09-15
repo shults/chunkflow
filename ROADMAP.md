@@ -8,13 +8,13 @@ they land on `master`.
 
 Goal: every future change is guarded by CI, leak detection and coverage.
 
-- [ ] **CI workflow** (`.github/workflows/ci.yml`)
-  - [ ] `gofmt -l` check (fail on unformatted files)
-  - [ ] `go vet ./...`
-  - [ ] `go test -race -shuffle=on -cover ./...`
-  - [ ] `golangci-lint` with a small, explicit config (`.golangci.yml`)
-  - [ ] `govulncheck ./...`
-  - [ ] matrix: Go `1.27.x` and `stable`
+- [x] **CI workflow** (`.github/workflows/ci.yml`)
+  - [x] `gofmt -l` check (fail on unformatted files)
+  - [x] `go vet ./...`
+  - [x] `go test -race -shuffle=on -cover ./...`
+  - [x] `golangci-lint` with a small, explicit config (`.golangci.yml`)
+  - [x] `govulncheck ./...`
+  - [x] matrix: Go `1.27.x` and `stable`
 - [ ] **Goroutine leak detection** with `go.uber.org/goleak`
   - [ ] `goleak.VerifyTestMain(m)` in a `TestMain` for the root package
   - [ ] `defer goleak.VerifyNone(t)` in every test that exercises `WithParallel(n > 1)`
