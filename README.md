@@ -26,12 +26,13 @@ package main
 import (
     "fmt"
     "github.com/shults/chunkflow"
+    "github.com/shults/chunkflow/seq"
 )
 
 func main() {
 
     res := chunkflow.
-        Numbers(1). // 1. Generate an infinite stream, but Take(20) and Skip(5) limit consumption to exactly 20 elements.
+        NewStream(seq.Numbers(1)). // 1. Wrap an infinite iterator; Skip(5) and Take(20) limit consumption to exactly 25 elements.
         Skip(5).
         Take(20).
         Filter(func(i int) bool { // 2. Lazy filtering on the fly.
@@ -48,21 +49,32 @@ func main() {
 
 ## API Reference
 
-### Generators (Initialization)
+### Constructors
 
-Functions that instantiate a new `Stream[T]`.
+`Stream[T]` and `IoStream[T]` have exactly one way of being created: wrapping a native Go iterator.
 
-| Function | Description | Stream Type |
+| Function | Description |
+| --- | --- |
+| `NewStream(iter.Seq[T])` | Wraps a native iterator into a synchronous `Stream[T]`. |
+| `NewIoStream(ctx, iter.Seq[T])` | Wraps a native iterator into a context-aware, error-propagating `IoStream[T]`. |
+| `NewIoStream2(ctx, iter.Seq2[T, error])` | Wraps a `(value, error)` iterator into an `IoStream[T]`. Inverse of `IoStream.Seq()`. |
+
+### Generators (`seq` sub-package)
+
+Iterator generators live in `github.com/shults/chunkflow/seq`. They return plain `iter.Seq[T]`, so they work with `NewStream`, `NewIoStream`, `slices.Collect` and `range` loops alike.
+
+| Function | Description | Length |
 | --- | --- | --- |
-| `NewStream(iter.Seq[T])` | Wraps a native Go iterator. | Any |
-| `FromItems(...T)` | Converts variadic arguments into a finite stream. | Finite |
-| `FromRange(start, end)` | Generates integers in the `[start, end)` range. | Finite |
-| `Numbers(start)` | Generates a monotonically increasing sequence. | **Infinite** |
-| `Const(val)` | Repeatedly emits the exact same value. | **Infinite** |
+| `seq.Items(...T)` | Yields the variadic arguments. | Finite |
+| `seq.Range(from, to)` | Yields integers in the half-open interval `[from, to)`. Works for any integer type. | Finite |
+| `seq.RangeInclusive(from, to)` | Yields integers in the closed interval `[from, to]`. Safe for `to == MaxInt`. | Finite |
+| `seq.Numbers(start)` | Monotonically increasing integers starting at `start`. | **Infinite** |
+| `seq.Const(val)` | Repeatedly emits the same value. | **Infinite** |
 
 ### Intermediate Operations (Lazy Transformations)
 
 These modify the pipeline logic but execute absolutely no work until a terminal operation is invoked.
+Every method below exists with the same name and shape on both `Stream[T]` and `IoStream[T]`.
 
 | Method | Signature | Description |
 | --- | --- | --- |
@@ -73,26 +85,42 @@ These modify the pipeline logic but execute absolutely no work until a terminal 
 | `Chunk` | `Chunk[R ~[]T](int)` | Groups elements into physical slices of the given size. |
 | `Through` | `Through[R](func(Stream) Stream)` | Pipes the stream through an external top-level function. |
 
+`IoStream[T]` additionally offers context-aware, error-returning variants and concurrency:
+
+| Method | Signature | Description |
+| --- | --- | --- |
+| `MapAsync` | `MapAsync[R](func(ctx, T) (R, error), ...Option)` | Like `Map`, but may fail and run on `WithParallel(n)` workers (order not preserved for n > 1). |
+| `FilterAsync` | `FilterAsync(func(ctx, T) (bool, error), ...Option)` | Like `Filter`, with the same error and concurrency semantics as `MapAsync`. |
+| `CircuitBreaker` | `CircuitBreaker(maxConsecutiveFailures int)` | Suppresses errors until `n` occur in a row, then aborts the pipeline. |
+| `Opts` | `Opts(...Option)` | Sets default options (`WithParallel`, `WithLogger`) inherited by all downstream operations. |
+
 ### Top-Level Functions
 
 | Function | Signature | Description |
 | --- | --- | --- |
 | `Flatten` | `Flatten[E](Stream[[]E])` | Unwraps a stream of slices into a flat stream of elements. Use with `.Through()`. |
+| `IoFlatten` | `IoFlatten[E](IoStream[[]E])` | `IoStream` counterpart of `Flatten`. Use with `.Through()`. |
 
 ### Terminal Operations (Execution Triggers)
 
-These pull the trigger, forcing the intermediate pipeline to evaluate.
+These pull the trigger, forcing the intermediate pipeline to evaluate. On `IoStream[T]` every terminal
+operation additionally returns an `error`: the first error produced upstream (or by the callback) stops
+consumption and is returned.
 
-| Method | Return Type | Description | Warning |
-| --- | --- | --- | --- |
-| `Collect` | `[]T` | Allocates and returns all processed elements as a slice. | OOM risk for infinite streams |
-| `Reduce` | `T` | Aggregates elements into a single accumulated value. | Requires a finite stream |
-| `ForEach` | `void` | Executes a side effect for every element. | Blocks the thread until completion |
-| `Exec` | `void` | Exhausts the stream entirely, discarding values. | - |
-| `Any` | `bool` | Short-circuits and returns true on the first match. | - |
-| `All` | `bool` | Short-circuits and returns false on the first mismatch. | - |
-| `First` | `(T, bool)` | Retrieves the first element and short-circuits. | - |
-| `Last` | `(T, bool)` | Consumes the entire stream to return the final element. | Requires a finite stream |
+| Method | `Stream` returns | `IoStream` returns | Description | Warning |
+| --- | --- | --- | --- | --- |
+| `Collect` | `[]T` | `([]T, error)` | Materializes all processed elements into a slice. | OOM risk for infinite streams |
+| `Reduce` | `T` | `(T, error)` | Aggregates elements into a single accumulated value. | Requires a finite stream |
+| `ForEach` | - | `error` | Executes a side effect for every element. | Blocks until completion |
+| `Exec` | - | `error` | Exhausts the stream, discarding values. | - |
+| `Any` | `bool` | `(bool, error)` | Short-circuits and returns true on the first match. | - |
+| `All` | `bool` | `(bool, error)` | Short-circuits and returns false on the first mismatch. | - |
+| `First` | `(T, bool)` | `(T, bool, error)` | Retrieves the first element and short-circuits. | - |
+| `Last` | `(T, bool)` | `(T, bool, error)` | Consumes the entire stream to return the final element. | Requires a finite stream |
+| `Seq` | `iter.Seq[T]` | `iter.Seq2[T, error]` | Exposes the pipeline as a native iterator. | - |
+
+`IoStream[T]` also provides `ReduceAsync`, `AllAsync`, `AnyAsync` and `ForEachAsync`, whose callbacks
+receive the `context.Context` and may return an error.
 
 ## Design Notes: Why `Flatten` requires `Through`
 

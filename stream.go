@@ -1,9 +1,6 @@
 package chunkflow
 
-import (
-	"iter"
-	"slices"
-)
+import "iter"
 
 // Stream represents a lazily evaluated pipeline operating on elements of type T.
 // Transforming operations do not allocate memory until a terminal operation is called.
@@ -14,44 +11,6 @@ type Stream[T any] struct {
 // NewStream initializes a stream based on a native Go iterator.
 func NewStream[T any](seq iter.Seq[T]) Stream[T] {
 	return Stream[T]{seq: seq}
-}
-
-// Const creates an infinite stream that emits only the specified value.
-func Const[T any](val T) Stream[T] {
-	return NewStream(func(yield func(T) bool) {
-		for {
-			if !yield(val) {
-				return
-			}
-		}
-	})
-}
-
-// FromItems converts an arbitrary number of arguments into a finite stream.
-func FromItems[T any](items ...T) Stream[T] {
-	return NewStream(slices.Values(items))
-}
-
-// FromRange generates a finite stream of integers in the range [start, end).
-func FromRange(start, end int) Stream[int] {
-	return NewStream(func(yield func(int) bool) {
-		for i := start; i < end; i++ {
-			if !yield(i) {
-				return
-			}
-		}
-	})
-}
-
-// Numbers generates an infinite, monotonically increasing sequence of integers starting from start.
-func Numbers(start int) Stream[int] {
-	return NewStream(func(yield func(int) bool) {
-		for i := start; ; i++ {
-			if !yield(i) {
-				return
-			}
-		}
-	})
 }
 
 // Map transforms each element of the stream using the provided function.
