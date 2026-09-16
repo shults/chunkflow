@@ -36,21 +36,49 @@ Goal: every future change is guarded by CI, leak detection and coverage.
 - [x] **Example tests** (`example_test.go`) for `Stream`, `IoStream`, `seq` — they double as godoc
 - [x] **Package docs**: `doc.go` in the root package with the overview currently only in README
 
-## Phase 2 — Measure the claims
+## Phase 2 — Operator set
 
-Goal: README states "O(1) memory" and "no heap allocation in intermediate ops"; prove or fix the wording.
+Goal: fill in the operators a typical ETL pipeline needs, keeping `Stream` / `IoStream` symmetric.
 
-- [ ] `BenchmarkStream_*` for `Map`, `Filter`, `Take`, `Skip`, `Chunk`, `Flatten` with `-benchmem`
-- [ ] `BenchmarkIoStream_*` for the sequential and the `WithParallel(n)` paths of `MapAsync` / `FilterAsync`
-- [ ] baseline the numbers with `benchstat` and keep the results in `BENCHMARKS.md`
-- [ ] adjust README wording to what the benchmarks show (per-stage vs per-element allocations)
-- [ ] optional: CI job that runs benchmarks on PRs and comments the `benchstat` diff
+- [x] `TakeWhile`, `SkipWhile` (+ `TakeWhileAsync`, `SkipWhileAsync` on `IoStream`)
+- [x] `Tap(fn func(T))` — per-element side effect that passes the element through unchanged
+      (sugar for `Map(func(x T) T { fn(x); return x })`; not to be confused with `Through`,
+      which rewires the whole pipeline). `TapAsync` on `IoStream`.
+- [x] `Count()` terminal
+- [x] ~~`Distinct()`~~ — deliberately not added. A global "seen" set needs O(unique) memory and
+      belongs to the user (DB, KV store, Bloom filter), not inside the pipeline. The batched
+      pattern `Chunk(n).MapAsync(dedupAgainstStore).Through(IoFlatten)` is documented as
+      `ExampleIoStream_Chunk_deduplication`; one round trip per batch beats a per-element check
+- [x] `Compact()` / `CompactFunc(eq)` — drop *consecutive* duplicates in O(1) memory, same contract
+      and name as `slices.Compact`; precondition (sorted or grouped input) stated in the first
+      sentence of the godoc. `Compact` needs `comparable`, so top-level + `Through`; `CompactFunc`
+      as a method
+- [x] `Concat(streams ...)` / `IoConcat` — sequential: drains the first, then the next; deterministic order.
+      Top-level function on both `Stream` and `IoStream`. Name matches `slices.Concat`
+- [x] `IoMerge(streams ...)` on `IoStream` only — concurrent fan-in, interleaved order.
+      Same variadic top-level shape as `Concat`; the single word is the only difference.
+      Decided against `MergeOrdered`/`MergeUnordered`: "ordered merge" reads as merge-sort of
+      sorted inputs, and the two operations are not symmetric (`Merge` needs goroutines, so no
+      `Stream` variant)
+- [x] channels: `NewIo(ctx, opts...)` builder with `Seq`, `Seq2`, `Chan` replaced `NewIoStream`/`NewIoStream2`.
+      `Chan` lives on the builder rather than in `seq` because it needs the context to unblock a
+      receive; the builder also binds default options once
+- [x] `seq`: `Repeat(val, n)`, `Iterate(seed, fn)`
 
 ## Phase 3 — API polish (breaking, do before tagging v0.1.0)
 
 Goal: fix the shapes that are awkward now, while nobody depends on them.
 
-- [ ] `Reduce(init, fn(acc, item))` — flip the accumulator to Go's conventional order on both stream types
+- [ ] rename the `*Async` family to `*Ctx`: `MapCtx`, `FilterCtx`, `TapCtx`, `TakeWhileCtx`, `SkipWhileCtx`,
+      `ForEachCtx`, `ReduceCtx`, `AllCtx`, `AnyCtx`. `Async` describes behaviour these methods do not
+      have (they block; parallelism is a separate `WithParallel` option). What actually differs is the
+      callback shape: it receives a `context.Context` and may return an error — the Go std convention
+      for that is a context suffix (`ExecContext`, `DialContext`); `Ctx` is the short form. A suffix,
+      not a prefix, so `Map` and `MapCtx` sit next to each other in godoc and completion. Mechanical
+      rename across code, tests, examples, README, doc.go, GEMINI.md
+- [ ] `Reduce(init, fn(acc, item))` — flip the *callback* argument order to Go's conventional
+      `(acc, item)` on both stream types. `init` stays the first parameter, before the closure:
+      an init value trailing a multi-line func literal reads badly
 - [ ] recover panics inside worker goroutines and surface them as errors (a panic in a worker currently kills the process)
 - [ ] `WithOrdered()` option for `MapAsync` / `FilterAsync` — preserve input order under `WithParallel(n > 1)`
   - sliding window: `n` workers pull freely, but results are emitted strictly in source order;
@@ -73,26 +101,52 @@ Goal: fix the shapes that are awkward now, while nobody depends on them.
 - [ ] document (or unify) `Stream.Chunk` panicking vs `IoStream.Chunk` emitting an error on invalid size
 - [ ] tag `v0.1.0`
 
-## Phase 4 — Operator set
+## Phase 4 — Measure the claims
 
-Goal: fill in the operators a typical ETL pipeline needs, keeping `Stream` / `IoStream` symmetric.
+Goal: README states "O(1) memory" and "no heap allocation in intermediate ops"; prove or fix the wording.
+Runs last, against the API frozen in Phase 3, so numbers are not invalidated by signature changes.
 
-- [ ] `TakeWhile`, `SkipWhile`
-- [ ] `Tap(fn func(T))` — per-element side effect that passes the element through unchanged
-      (sugar for `Map(func(x T) T { fn(x); return x })`; not to be confused with `Through`,
-      which rewires the whole pipeline). `TapAsync` on `IoStream`.
-- [x] `Count()` terminal
-- [ ] `Distinct()` for comparable `T` (top-level function + `Through`, like `Flatten`)
-- [ ] `Concat(a, b, ...)` — sequential: drains `a`, then emits `b`; deterministic order
-- [ ] `Merge(a, b, ...)` on `IoStream` only — concurrent fan-in, interleaved order
-- [ ] `Zip(a, b)` — pairs elements positionally, stops at the shorter stream
-- [ ] `seq`: `FromChan`, `Repeat(val, n)`, `Iterate(seed, fn)`
+- [ ] `BenchmarkStream_*` for `Map`, `Filter`, `Take`, `Skip`, `Chunk`, `Flatten` with `-benchmem`
+- [ ] `BenchmarkIoStream_*` for the sequential and the `WithParallel(n)` paths of `MapAsync` / `FilterAsync`
+- [ ] baseline the numbers with `benchstat` and keep the results in `BENCHMARKS.md`
+- [ ] adjust README wording to what the benchmarks show (per-stage vs per-element allocations)
+- [ ] optional: CI job that runs benchmarks on PRs and comments the `benchstat` diff
 
 ## Parking lot
 
 Ideas without a decision yet.
 
-- `Stream.Io(ctx)` shortcut instead of `NewIoStream(ctx, s.Seq())`
+- `Stream.Io(ctx)` shortcut instead of `NewIo(ctx).Seq(s.Seq())`
+- `ZipWith(a, b, fn)` / `IoZipWith` — pairs elements positionally, stops at the shorter stream.
+  Backlog, no committed use case yet. Design if picked up: `ZipWith` as the only primitive (no `Zip`,
+  no `Pair` in root); `iter.Pull` on the second stream with `defer stop()`; when the second
+  stream ends first, the already-pulled element of the first is dropped (same as the std
+  `iter.Zip` proposal). Errors: pair the i-th *value* of each side, forward errors where they
+  occur; merged context. Tuples, if wanted, go to a `tuple` sub-package (`Pair`, `Triple`,
+  `MakePair`, `MakeTriple`) so `ZipWith(a, b, tuple.MakePair)` works without a root
+  dependency; no `Zip3With`, show the nested form in an example instead. Tests must include
+  goleak on short-circuit (an unstopped `iter.Pull` leaks a goroutine) and on a parallel stage
+  behind the pulled side
 - rate limiting / retry with backoff as `IoStream` operators
-- `iter.Seq2[K, V]`-based `KVStream`
+- ~~`iter.Seq2[K, V]`-based `KVStream`~~ — dropped: it would need both a sync and an Io variant
+  (four stream types instead of two) for a handful of key/value helpers. Same problem, smaller
+  cost: pair elements. Depends on the `tuple` sub-package decided together with `ZipWith`:
+  - `seq.Pairs(iter.Seq2[K, V]) iter.Seq[tuple.Pair[K, V]]` — adapter for any `Seq2` source
+  - `seq.KVPairs(map[K]V) iter.Seq[tuple.Pair[K, V]]` — map shortcut so callers need not import `maps`
+    (`maps.Keys` / `maps.Values` already plug straight into `NewStream` / `NewIo(ctx).Seq`)
+  - key/value helpers, if ever needed, as top-level functions via `Through`, never a new stream type
 - fuzz tests for `Chunk` + `Flatten` round trip
+- **error policies as plug-ins** (undecided, gut says "not yet"). `CircuitBreaker` is one instance of a
+  more general thing: a stage that looks only at errored elements and decides *fatal* / *tolerated* /
+  *replaced*. Others of the same family: tolerate all, tolerate `errors.Is(err, X)`, tolerate below an
+  error rate in a window. `Retry` is not one of them (it must re-run the upstream op, so it wraps
+  `MapAsync` instead).
+  - the extension seam already exists: errors flow as elements, `Seq()` / `NewIo(ctx).Seq2` cross the
+    boundary in both directions, `Through` plugs a transform in. The only missing piece is a way to
+    mark an error as tolerated from outside — an exported constructor such as `Suppress(err) error`,
+    never the struct or its fields
+  - rule of three: do not generalise from one case. The *second* policy does not enter as another
+    method; at that point either add `OnError(policy)` + `Suppress`, or accept two concrete operators
+  - if that happens, `CircuitBreaker` (and possibly `Flatten`/`Compact`-style top-level helpers) move
+    out of the core stream types into a neighbouring place — a `policy`/`ops` sub-package — so the core
+    stays the two stream types, the builder and the terminals

@@ -36,6 +36,52 @@ func ExampleStream_Take_infinite() {
 	// Output: [1 4 9 16 25]
 }
 
+func ExampleStream_Tap() {
+	// Tap is for side effects; the stream itself is untouched.
+	total := chunkflow.NewStream(seq.Range(1, 4)).
+		Tap(func(i int) { fmt.Println("seen", i) }).
+		Reduce(0, func(item, acc int) int { return acc + item })
+
+	fmt.Println("total", total)
+	// Output:
+	// seen 1
+	// seen 2
+	// seen 3
+	// total 6
+}
+
+func ExampleStream_TakeWhile() {
+	// A data-dependent stop condition on an infinite source.
+	squaresBelow50 := chunkflow.NewStream(seq.Numbers(1)).
+		Map(func(i int) int { return i * i }).
+		TakeWhile(func(sq int) bool { return sq < 50 }).
+		Collect()
+
+	fmt.Println(squaresBelow50)
+	// Output: [1 4 9 16 25 36 49]
+}
+
+func ExampleStream_SkipWhile() {
+	// Unlike Filter, SkipWhile stops testing after the first element that passes.
+	res := chunkflow.NewStream(seq.Items(1, 2, 3, 10, 4, 5)).
+		SkipWhile(func(i int) bool { return i < 4 }).
+		Collect()
+
+	fmt.Println(res)
+	// Output: [10 4 5]
+}
+
+func ExampleCompact() {
+	// Compact removes duplicates only when they are adjacent (like slices.Compact or uniq),
+	// so it needs sorted or grouped input. In exchange it runs in O(1) memory.
+	res := chunkflow.NewStream(seq.Items("a", "a", "b", "b", "b", "c", "a")).
+		Through(chunkflow.Compact).
+		Collect()
+
+	fmt.Println(res)
+	// Output: [a b c a]
+}
+
 func ExampleStream_Chunk() {
 	chunks := chunkflow.NewStream(seq.Range(1, 8)).
 		Chunk(3).
@@ -74,4 +120,18 @@ func ExampleStream_All() {
 	// Output:
 	// true
 	// false
+}
+
+func ExampleConcat() {
+	// Sources are consumed one after another; the second is not touched until the first ends.
+	header := chunkflow.NewStream(seq.Items("id,name"))
+	rows := chunkflow.NewStream(seq.Items("1,alice", "2,bob"))
+
+	for line := range chunkflow.Concat(header, rows).Seq() {
+		fmt.Println(line)
+	}
+	// Output:
+	// id,name
+	// 1,alice
+	// 2,bob
 }

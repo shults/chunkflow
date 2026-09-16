@@ -14,20 +14,21 @@
 // # Constructing streams
 //
 // Both types are built from native iterators only. Generators live in the
-// sub-package seq (Items, Range, RangeInclusive, Numbers, Const) so that they are
+// sub-package seq (Items, Range, RangeInclusive, Numbers, Const, Repeat, Iterate) so that they are
 // equally usable with slices.Collect, range loops and this package:
 //
 //	evens := chunkflow.NewStream(seq.Range(0, 100)).
 //		Filter(func(i int) bool { return i%2 == 0 }).
 //		Collect()
 //
-//	rows, err := chunkflow.NewIoStream(ctx, seq.Items(ids...)).
-//		MapAsync(fetchRow, chunkflow.WithParallel(8)).
+//	rows, err := chunkflow.NewIo(ctx, chunkflow.WithParallel(8)).Seq(seq.Items(ids...)).
+//		MapAsync(fetchRow).
 //		Chunk[[]Row](500).
 //		ForEachAsync(insertBatch)
 //
-// NewIoStream2 wraps an iter.Seq2[T, error] and is the inverse of IoStream.Seq,
-// which exposes any IoStream as a native (value, error) iterator.
+// IoStream is built through NewIo(ctx, opts...), which binds the context and default
+// options first and lets the source pick the element type: Seq wraps an iter.Seq,
+// Seq2 an iter.Seq2[T, error] (the inverse of IoStream.Seq), Chan a receive channel.
 //
 // # Type-changing operations
 //

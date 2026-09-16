@@ -41,6 +41,24 @@ func TestStream_Transformations(t *testing.T) {
 		assert.Equal(t, []string{"1x", "2x", "3x"}, res)
 	})
 
+	t.Run("Tap should observe every element without changing the stream", func(t *testing.T) {
+		var seen []int
+		res := chunkflow.NewStream(seq.Range(1, 4)).
+			Tap(func(i int) { seen = append(seen, i) }).
+			Map(func(i int) int { return i * 10 }).
+			Collect()
+		assert.Equal(t, []int{10, 20, 30}, res)
+		assert.Equal(t, []int{1, 2, 3}, seen)
+	})
+
+	t.Run("Tap is lazy and honours short-circuiting", func(t *testing.T) {
+		calls := 0
+		s := chunkflow.NewStream(seq.Numbers(0)).Tap(func(int) { calls++ })
+		assert.Equal(t, 0, calls, "nothing may run before a terminal operation")
+		_, _ = s.Skip(2).First()
+		assert.Equal(t, 3, calls)
+	})
+
 	t.Run("Filter should drop non-matching items", func(t *testing.T) {
 		res := chunkflow.NewStream(seq.Range(1, 10)).
 			Filter(func(i int) bool {
@@ -48,6 +66,28 @@ func TestStream_Transformations(t *testing.T) {
 			}).
 			Collect()
 		assert.Equal(t, []int{2, 4, 6, 8}, res)
+	})
+
+	t.Run("Compact drops only consecutive duplicates", func(t *testing.T) {
+		res := chunkflow.NewStream(seq.Items(1, 1, 2, 2, 2, 3, 1, 1)).
+			Through(chunkflow.Compact).
+			Collect()
+		assert.Equal(t, []int{1, 2, 3, 1}, res, "1 reappears because it is not adjacent to the first run")
+	})
+
+	t.Run("Compact on empty and single-element streams", func(t *testing.T) {
+		assert.Empty(t, chunkflow.Compact(chunkflow.NewStream(seq.Items[int]())).Collect())
+		assert.Equal(t, []int{7}, chunkflow.Compact(chunkflow.NewStream(seq.Items(7))).Collect())
+	})
+
+	t.Run("CompactFunc compares with a custom equality", func(t *testing.T) {
+		type row struct{ key, payload string }
+		res := chunkflow.NewStream(seq.Items(
+			row{"a", "1"}, row{"a", "2"}, row{"b", "3"}, row{"b", "4"}, row{"a", "5"},
+		)).
+			CompactFunc(func(x, y row) bool { return x.key == y.key }).
+			Collect()
+		assert.Equal(t, []row{{"a", "1"}, {"b", "3"}, {"a", "5"}}, res, "the first of each run is kept")
 	})
 
 	t.Run("Chunk should group elements and handle remainders", func(t *testing.T) {
@@ -66,6 +106,38 @@ func TestStream_Slicing(t *testing.T) {
 	t.Run("Skip should bypass exact number of elements", func(t *testing.T) {
 		res := chunkflow.NewStream(seq.Range(1, 10)).Skip(5).Collect()
 		assert.Equal(t, []int{6, 7, 8, 9}, res)
+	})
+
+	t.Run("TakeWhile stops at the first mismatch and stops pulling", func(t *testing.T) {
+		pulled := 0
+		res := chunkflow.NewStream(seq.Items(1, 2, 3, 10, 4, 5)).
+			Tap(func(int) { pulled++ }).
+			TakeWhile(func(i int) bool { return i < 4 }).
+			Collect()
+		assert.Equal(t, []int{1, 2, 3}, res)
+		assert.Equal(t, 4, pulled, "the failing element is pulled, nothing after it")
+	})
+
+	t.Run("TakeWhile on an infinite source", func(t *testing.T) {
+		res := chunkflow.NewStream(seq.Numbers(0)).TakeWhile(func(i int) bool { return i*i < 30 }).Collect()
+		assert.Equal(t, []int{0, 1, 2, 3, 4, 5}, res)
+	})
+
+	t.Run("SkipWhile drops the prefix and then stops evaluating", func(t *testing.T) {
+		evaluated := 0
+		res := chunkflow.NewStream(seq.Items(1, 2, 3, 10, 4, 5)).
+			SkipWhile(func(i int) bool { evaluated++; return i < 4 }).
+			Collect()
+		assert.Equal(t, []int{10, 4, 5}, res)
+		assert.Equal(t, 4, evaluated, "predicate must not run after the first false")
+	})
+
+	t.Run("TakeWhile and SkipWhile on empty and all-matching streams", func(t *testing.T) {
+		lt10 := func(i int) bool { return i < 10 }
+		assert.Empty(t, chunkflow.NewStream(seq.Items[int]()).TakeWhile(lt10).Collect())
+		assert.Empty(t, chunkflow.NewStream(seq.Items[int]()).SkipWhile(lt10).Collect())
+		assert.Equal(t, []int{1, 2}, chunkflow.NewStream(seq.Items(1, 2)).TakeWhile(lt10).Collect())
+		assert.Empty(t, chunkflow.NewStream(seq.Items(1, 2)).SkipWhile(lt10).Collect())
 	})
 
 	t.Run("Skip+Take allows for precise pagination", func(t *testing.T) {
@@ -220,9 +292,16 @@ func TestStream_ShortCircuitPropagates(t *testing.T) {
 		"Filter": func(s chunkflow.Stream[int]) chunkflow.Stream[int] { return s.Filter(func(int) bool { return true }) },
 		"Take":   func(s chunkflow.Stream[int]) chunkflow.Stream[int] { return s.Take(1000) },
 		"Skip":   func(s chunkflow.Stream[int]) chunkflow.Stream[int] { return s.Skip(1) },
+		"TakeWhile": func(s chunkflow.Stream[int]) chunkflow.Stream[int] {
+			return s.TakeWhile(func(int) bool { return true })
+		},
+		"SkipWhile": func(s chunkflow.Stream[int]) chunkflow.Stream[int] {
+			return s.SkipWhile(func(i int) bool { return i < 1 })
+		},
 		"Chunk+Flatten": func(s chunkflow.Stream[int]) chunkflow.Stream[int] {
 			return s.Chunk[[]int](3).Through(chunkflow.Flatten)
 		},
+		"Compact": func(s chunkflow.Stream[int]) chunkflow.Stream[int] { return s.Through(chunkflow.Compact) },
 	}
 
 	for name, stage := range stages {
@@ -257,5 +336,34 @@ func TestStream_ShortCircuitPropagates(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, []int{0, 1, 2}, chunk)
 		assert.Equal(t, 3, pulled)
+	})
+}
+
+func TestStream_Concat(t *testing.T) {
+	t.Run("emits streams one after another", func(t *testing.T) {
+		res := chunkflow.Concat(
+			chunkflow.NewStream(seq.Items(1, 2)),
+			chunkflow.NewStream(seq.Items[int]()),
+			chunkflow.NewStream(seq.Items(3)),
+		).Collect()
+		assert.Equal(t, []int{1, 2, 3}, res)
+	})
+
+	t.Run("with no arguments is empty", func(t *testing.T) {
+		assert.Empty(t, chunkflow.Concat[int]().Collect())
+	})
+
+	t.Run("does not touch later streams while short-circuiting in an earlier one", func(t *testing.T) {
+		secondPulled := 0
+		second := chunkflow.NewStream(seq.Numbers(100)).Tap(func(int) { secondPulled++ })
+		res := chunkflow.Concat(chunkflow.NewStream(seq.Numbers(0)), second).Take(3).Collect()
+		assert.Equal(t, []int{0, 1, 2}, res)
+		assert.Equal(t, 0, secondPulled)
+	})
+
+	t.Run("can be re-iterated", func(t *testing.T) {
+		s := chunkflow.Concat(chunkflow.NewStream(seq.Items(1)), chunkflow.NewStream(seq.Items(2)))
+		assert.Equal(t, []int{1, 2}, s.Collect())
+		assert.Equal(t, []int{1, 2}, s.Collect())
 	})
 }

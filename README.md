@@ -62,17 +62,20 @@ The pre-commit hook lives in `.githooks/` and is enabled via `core.hooksPath`. S
 
 ### Constructors
 
-`Stream[T]` and `IoStream[T]` have exactly one way of being created: wrapping a native Go iterator.
+`Stream[T]` is created from a native iterator. `IoStream[T]` is created through a small builder:
+`NewIo` binds the context and default options first, and the source method picks the element type.
 
 | Function | Description |
 | --- | --- |
 | `NewStream(iter.Seq[T])` | Wraps a native iterator into a synchronous `Stream[T]`. |
-| `NewIoStream(ctx, iter.Seq[T])` | Wraps a native iterator into a context-aware, error-propagating `IoStream[T]`. |
-| `NewIoStream2(ctx, iter.Seq2[T, error])` | Wraps a `(value, error)` iterator into an `IoStream[T]`. Inverse of `IoStream.Seq()`. |
+| `NewIo(ctx, ...Option)` | Starts an `IoStream` bound to `ctx`; options become the pipeline defaults. |
+| `NewIo(ctx).Seq(iter.Seq[T])` | Wraps a native iterator. The context is checked before every element. |
+| `NewIo(ctx).Seq2(iter.Seq2[T, error])` | Wraps a `(value, error)` iterator. Inverse of `IoStream.Seq()`. |
+| `NewIo(ctx).Chan(<-chan T)` | Reads a channel until it is closed or the context is cancelled. Single-use; stopping early does not close the channel. |
 
 ### Generators (`seq` sub-package)
 
-Iterator generators live in `github.com/shults/chunkflow/seq`. They return plain `iter.Seq[T]`, so they work with `NewStream`, `NewIoStream`, `slices.Collect` and `range` loops alike.
+Iterator generators live in `github.com/shults/chunkflow/seq`. They return plain `iter.Seq[T]`, so they work with `NewStream`, `NewIo(ctx).Seq`, `slices.Collect` and `range` loops alike.
 
 | Function | Description | Length |
 | --- | --- | --- |
@@ -81,6 +84,8 @@ Iterator generators live in `github.com/shults/chunkflow/seq`. They return plain
 | `seq.RangeInclusive(from, to)` | Yields integers in the closed interval `[from, to]`. Safe for `to == MaxInt`. | Finite |
 | `seq.Numbers(start)` | Monotonically increasing integers starting at `start`. | **Infinite** |
 | `seq.Const(val)` | Repeatedly emits the same value. | **Infinite** |
+| `seq.Repeat(val, n)` | Emits the same value `n` times; the finite form of `Const`. | Finite |
+| `seq.Iterate(seed, fn)` | Emits `seed`, `fn(seed)`, `fn(fn(seed))`, ... Restarts from `seed` on every pass. | **Infinite** |
 
 ### Intermediate Operations (Lazy Transformations)
 
@@ -91,8 +96,12 @@ Every method below exists with the same name and shape on both `Stream[T]` and `
 | --- | --- | --- |
 | `Map` | `Map[R](func(T) R)` | Transforms each element from type T to R. |
 | `Filter` | `Filter(func(T) bool)` | Emits only elements that satisfy the predicate. |
+| `Tap` | `Tap(func(T))` | Runs a side effect for each element and passes it through unchanged. |
 | `Take` | `Take(int)` | Limits the stream to the first N elements. |
 | `Skip` | `Skip(int)` | Bypasses the first N elements. |
+| `TakeWhile` | `TakeWhile(func(T) bool)` | Emits elements while the predicate holds, then stops pulling from the source. |
+| `SkipWhile` | `SkipWhile(func(T) bool)` | Drops elements while the predicate holds, then emits the rest without testing. |
+| `CompactFunc` | `CompactFunc(func(a, b T) bool)` | Drops **consecutive** duplicates in O(1) memory; input must be sorted or grouped for a global dedup. |
 | `Chunk` | `Chunk[R ~[]T](int)` | Groups elements into physical slices of the given size. |
 | `Through` | `Through[R](func(Stream) Stream)` | Pipes the stream through an external top-level function. |
 
@@ -102,6 +111,8 @@ Every method below exists with the same name and shape on both `Stream[T]` and `
 | --- | --- | --- |
 | `MapAsync` | `MapAsync[R](func(ctx, T) (R, error), ...Option)` | Like `Map`, but may fail and run on `WithParallel(n)` workers (order not preserved for n > 1). |
 | `FilterAsync` | `FilterAsync(func(ctx, T) (bool, error), ...Option)` | Like `Filter`, with the same error and concurrency semantics as `MapAsync`. |
+| `TapAsync` | `TapAsync(func(ctx, T) error, ...Option)` | Like `Tap`; a returned error replaces the element. Same concurrency semantics as `MapAsync`. |
+| `TakeWhileAsync` / `SkipWhileAsync` | `(func(ctx, T) (bool, error))` | Context-aware predicates; always sequential. Errors in the stream pass through unevaluated. |
 | `CircuitBreaker` | `CircuitBreaker(maxConsecutiveFailures int)` | Tolerates up to `n-1` errors in a row by re-emitting them marked as `ErrSuppressed`; trips on the `n`-th. Context errors are never suppressed. |
 | `Opts` | `Opts(...Option)` | Sets default options (`WithParallel`, `WithLogger`, `WithDiscardLogger`) inherited by all downstream operations. |
 
@@ -136,6 +147,11 @@ for v, err := range stream.CircuitBreaker(5).Seq() {
 | --- | --- | --- |
 | `Flatten` | `Flatten[E](Stream[[]E])` | Unwraps a stream of slices into a flat stream of elements. Use with `.Through()`. |
 | `IoFlatten` | `IoFlatten[E](IoStream[[]E])` | `IoStream` counterpart of `Flatten`. Use with `.Through()`. |
+| `Compact` | `Compact[T comparable](Stream[T])` | `CompactFunc` with `==`. Needs `comparable`, hence top-level. Use with `.Through()`. |
+| `IoCompact` | `IoCompact[T comparable](IoStream[T])` | `IoStream` counterpart of `Compact`. Use with `.Through()`. |
+| `Concat` | `Concat(...Stream[T])` | Emits the streams one after another, deterministic order. Name follows `slices.Concat`. |
+| `IoConcat` | `IoConcat(...IoStream[T])` | `IoStream` counterpart of `Concat`; errors keep their position. |
+| `IoMerge` | `IoMerge(...IoStream[T])` | Consumes all streams concurrently and interleaves elements as they arrive. No `Stream` variant: needs goroutines and a context. |
 
 ### Terminal Operations (Execution Triggers)
 

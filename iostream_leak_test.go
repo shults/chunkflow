@@ -33,7 +33,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 		defer goleak.VerifyNone(t)
 
 		res, err := chunkflow.
-			NewIoStream(ctx, seq.Numbers(0)).
+			NewIo(ctx).Seq(seq.Numbers(0)).
 			MapAsync(func(_ context.Context, i int) (int, error) {
 				return i * 2, nil
 			}, chunkflow.WithParallel(4)).
@@ -48,7 +48,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 		defer goleak.VerifyNone(t)
 
 		val, ok, err := chunkflow.
-			NewIoStream(ctx, seq.Numbers(0)).
+			NewIo(ctx).Seq(seq.Numbers(0)).
 			FilterAsync(func(_ context.Context, i int) (bool, error) {
 				return i%7 == 0, nil
 			}, chunkflow.WithParallel(4)).
@@ -69,7 +69,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 		done := make(chan error, 1)
 		go func() {
 			_, err := chunkflow.
-				NewIoStream(cctx, seq.Numbers(0)).
+				NewIo(cctx).Seq(seq.Numbers(0)).
 				MapAsync(func(ctx context.Context, i int) (int, error) {
 					started.Add(1)
 					return blockUntilCancelled(ctx, i)
@@ -95,7 +95,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 
 		boom := errors.New("boom")
 		_, err := chunkflow.
-			NewIoStream(ctx, seq.Numbers(0)).
+			NewIo(ctx).Seq(seq.Numbers(0)).
 			MapAsync(func(ctx context.Context, i int) (int, error) {
 				if i == 3 {
 					return 0, boom
@@ -122,7 +122,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 		}
 
 		_, err := chunkflow.
-			NewIoStream2(ctx, src).
+			NewIo(ctx).Seq2(src).
 			MapAsync(blockUntilCancelled[int], chunkflow.WithParallel(4)).
 			Collect()
 
@@ -133,7 +133,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 		defer goleak.VerifyNone(t)
 
 		res, err := chunkflow.
-			NewIoStream(ctx, seq.Numbers(0)).
+			NewIo(ctx).Seq(seq.Numbers(0)).
 			MapAsync(func(_ context.Context, i int) (int, error) { return i + 1, nil }, chunkflow.WithParallel(3)).
 			FilterAsync(func(_ context.Context, i int) (bool, error) { return i%2 == 0, nil }, chunkflow.WithParallel(2)).
 			Chunk[[]int](5).

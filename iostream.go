@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"slices"
 	"sync"
 )
 
@@ -23,17 +24,6 @@ type IoStream[T any] struct {
 	options options
 	ctx     context.Context
 	seq     iter.Seq[result[T]]
-}
-
-// result is the internal element wrapper: either a value or an error.
-type result[T any] struct {
-	value T
-	err   error
-}
-
-type options struct {
-	concurrency int
-	logger      *slog.Logger
 }
 
 // Option configures an IoStream or a single asynchronous operation.
@@ -58,46 +48,77 @@ func WithDiscardLogger() Option {
 	return WithLogger(slog.New(slog.DiscardHandler))
 }
 
-func defaultOptions() options {
-	return options{
-		concurrency: 1,
-		logger:      slog.New(slog.DiscardHandler),
-	}
+// IoBuilder binds a context and default options before the element type is known.
+// Obtain one with NewIo and turn it into an IoStream with Seq, Seq2 or Chan; each of
+// those is a generic method, so the element type is inferred from the source.
+type IoBuilder struct {
+	options options
+	ctx     context.Context
 }
 
-// NewIoStream wraps a native Go iterator into a context-aware IoStream.
-// The context is checked before every element is emitted.
-func NewIoStream[T any](ctx context.Context, seq iter.Seq[T]) IoStream[T] {
-	return IoStream[T]{
-		options: defaultOptions(),
-		ctx:     ctx,
-		seq: func(yield func(result[T]) bool) {
-			for item := range seq {
-				if !yield(result[T]{value: item, err: ctx.Err()}) {
+// NewIo starts building an IoStream bound to ctx. The options become the defaults of
+// every operation in the resulting pipeline (see Opts):
+//
+//	chunkflow.NewIo(ctx, chunkflow.WithParallel(8)).Chan(jobs).MapAsync(process).Exec()
+func NewIo(ctx context.Context, opts ...Option) IoBuilder {
+	o := defaultOptions()
+	for _, apply := range opts {
+		apply(&o)
+	}
+	return IoBuilder{options: o, ctx: ctx}
+}
+
+// Seq wraps a native Go iterator. The context is checked before every element is
+// emitted; once it is cancelled the next element carries the context error.
+func (b IoBuilder) Seq[T any](seq iter.Seq[T]) IoStream[T] {
+	return b.stream(func(yield func(result[T]) bool) {
+		for item := range seq {
+			if !yield(result[T]{value: item, err: b.ctx.Err()}) {
+				return
+			}
+		}
+	})
+}
+
+// Seq2 wraps a native (value, error) iterator, the inverse of IoStream.Seq. Elements
+// whose error is nil still pick up the context error once the context is cancelled.
+func (b IoBuilder) Seq2[T any](seq iter.Seq2[T, error]) IoStream[T] {
+	return b.stream(func(yield func(result[T]) bool) {
+		for item, err := range seq {
+			if err == nil {
+				err = b.ctx.Err()
+			}
+			if !yield(result[T]{value: item, err: err}) {
+				return
+			}
+		}
+	})
+}
+
+// Chan reads from ch until it is closed or the context is cancelled; a cancellation
+// ends the stream with the context error as its last element.
+//
+// The resulting stream is single-use: a channel cannot be rewound, so iterating the
+// stream twice yields whatever the first pass left behind. Stopping early (Take, First,
+// a break) stops reading but does not close ch or signal the producer; a producer that
+// may outlive the consumer must watch the same context.
+func (b IoBuilder) Chan[T any](ch <-chan T) IoStream[T] {
+	return b.stream(func(yield func(result[T]) bool) {
+		for {
+			select {
+			case <-b.ctx.Done():
+				yield(result[T]{err: b.ctx.Err()})
+				return
+			case item, ok := <-ch:
+				if !ok {
+					return
+				}
+				if !yield(result[T]{value: item}) {
 					return
 				}
 			}
-		},
-	}
-}
-
-// NewIoStream2 wraps a native (value, error) iterator into an IoStream.
-// It is the inverse of IoStream.Seq.
-func NewIoStream2[T any](ctx context.Context, seq iter.Seq2[T, error]) IoStream[T] {
-	return IoStream[T]{
-		options: defaultOptions(),
-		ctx:     ctx,
-		seq: func(yield func(result[T]) bool) {
-			for item, err := range seq {
-				if err == nil {
-					err = ctx.Err()
-				}
-				if !yield(result[T]{value: item, err: err}) {
-					return
-				}
-			}
-		},
-	}
+		}
+	})
 }
 
 // Opts returns a copy of the stream with the given options applied as defaults
@@ -106,30 +127,6 @@ func (s IoStream[T]) Opts(opts ...Option) IoStream[T] {
 	s.options = s.getOptions(opts...)
 	return s
 }
-
-func (s IoStream[T]) getOptions(opts ...Option) options {
-	o := s.options
-	for _, apply := range opts {
-		apply(&o)
-	}
-	return o
-}
-
-// derive builds a new stream of another element type that inherits ctx and options.
-func (s IoStream[T]) derive[R any](seq iter.Seq[result[R]]) IoStream[R] {
-	return IoStream[R]{options: s.options, ctx: s.ctx, seq: seq}
-}
-
-// errStream builds a stream that emits a single error and ends.
-func (s IoStream[T]) errStream[R any](err error) IoStream[R] {
-	return s.derive(func(yield func(result[R]) bool) {
-		yield(result[R]{err: err})
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Intermediate operations
-// ---------------------------------------------------------------------------
 
 // Map transforms each element of the stream using the provided function.
 func (s IoStream[T]) Map[R any](mapFn func(T) R) IoStream[R] {
@@ -147,41 +144,43 @@ func (s IoStream[T]) MapAsync[R any](mapFn func(ctx context.Context, item T) (R,
 		return s.errStream[R](fmt.Errorf("concurrency must be at least 1"))
 	}
 
-	if o.concurrency == 1 {
-		return s.derive(func(yield func(result[R]) bool) {
-			for item := range s.seq {
-				if item.err != nil {
-					if !yield(result[R]{err: item.err}) {
-						return
-					}
-					continue
-				}
-				val, err := mapFn(s.ctx, item.value)
-				if !yield(result[R]{value: val, err: err}) {
-					return
-				}
-			}
-		})
+	if o.concurrency > 1 {
+		return s.derive(s.mapAsyncConcurrent(mapFn, o.concurrency))
 	}
 
 	return s.derive(func(yield func(result[R]) bool) {
-		ctx, cancel := context.WithCancel(s.ctx)
-		defer cancel()
-
-		outChan := make(chan result[R], o.concurrency)
-		runConcurrent(ctx, s.seq, o.concurrency, mapFn, outChan)
-
-		for res := range outChan {
-			if !yield(res) {
+		for item := range s.seq {
+			if item.err != nil {
+				if !yield(result[R]{err: item.err}) {
+					return
+				}
+				continue
+			}
+			val, err := mapFn(s.ctx, item.value)
+			if !yield(result[R]{value: val, err: err}) {
 				return
 			}
 		}
-		// Workers and the feeder bail out silently on ctx.Done(); make sure the
-		// cancellation still surfaces to the consumer as an error.
-		if err := s.ctx.Err(); err != nil {
-			yield(result[R]{err: err})
-		}
 	})
+}
+
+// Tap invokes fn for every value and passes it through unchanged. Errors flow past
+// untouched; fn never sees them. Meant for side effects such as logging or metrics.
+func (s IoStream[T]) Tap(fn func(T)) IoStream[T] {
+	return s.TapAsync(func(_ context.Context, item T) error {
+		fn(item)
+		return nil
+	}, WithParallel(1))
+}
+
+// TapAsync invokes a context-aware fn for every value and passes the value through
+// unchanged. An error returned by fn replaces the value with that error in the
+// stream. With WithParallel(n > 1) fn runs on n workers and the output order is not
+// guaranteed, exactly as for MapAsync.
+func (s IoStream[T]) TapAsync(fn func(ctx context.Context, item T) error, opts ...Option) IoStream[T] {
+	return s.MapAsync(func(ctx context.Context, item T) (T, error) {
+		return item, fn(ctx, item)
+	}, opts...)
 }
 
 // Filter emits only the elements for which the predicate returns true.
@@ -228,17 +227,16 @@ func (s IoStream[T]) FilterAsync(predicate func(ctx context.Context, item T) (bo
 		match bool
 	}
 
+	// Evaluate the predicate on the worker pool, then drop the non-matching values.
+	// The pool yields a bare sequence rather than an IoStream[filtered]: instantiating
+	// IoStream with a local type that depends on T would form a generic instantiation cycle.
+	inner := s.mapAsyncConcurrent(func(ctx context.Context, item T) (filtered, error) {
+		match, err := predicate(ctx, item)
+		return filtered{val: item, match: match}, err
+	}, o.concurrency)
+
 	return s.derive(func(yield func(result[T]) bool) {
-		ctx, cancel := context.WithCancel(s.ctx)
-		defer cancel()
-
-		outChan := make(chan result[filtered], o.concurrency)
-		runConcurrent(ctx, s.seq, o.concurrency, func(ctx context.Context, item T) (filtered, error) {
-			match, err := predicate(ctx, item)
-			return filtered{val: item, match: match}, err
-		}, outChan)
-
-		for res := range outChan {
+		for res := range inner {
 			if res.err != nil {
 				if !yield(result[T]{err: res.err}) {
 					return
@@ -248,9 +246,6 @@ func (s IoStream[T]) FilterAsync(predicate func(ctx context.Context, item T) (bo
 			if res.value.match && !yield(result[T]{value: res.value.val}) {
 				return
 			}
-		}
-		if err := s.ctx.Err(); err != nil {
-			yield(result[T]{err: err})
 		}
 	})
 }
@@ -293,6 +288,107 @@ func (s IoStream[T]) Skip(nr int) IoStream[T] {
 			if skipped < nr {
 				skipped++
 				continue
+			}
+			if !yield(item) {
+				return
+			}
+		}
+	})
+}
+
+// TakeWhile emits values as long as the predicate returns true and short-circuits at
+// the first value for which it returns false; nothing further is pulled from the source.
+// Errors are passed through and are not evaluated by the predicate.
+func (s IoStream[T]) TakeWhile(predicate func(T) bool) IoStream[T] {
+	return s.TakeWhileAsync(func(_ context.Context, item T) (bool, error) {
+		return predicate(item), nil
+	})
+}
+
+// TakeWhileAsync is TakeWhile with a context-aware predicate. A predicate error is
+// emitted as an error element; the stream continues and the predicate keeps being
+// evaluated on subsequent values, so a downstream CircuitBreaker can tolerate it.
+func (s IoStream[T]) TakeWhileAsync(predicate func(ctx context.Context, item T) (bool, error)) IoStream[T] {
+	return s.derive(func(yield func(result[T]) bool) {
+		for item := range s.seq {
+			if item.err != nil {
+				if !yield(item) {
+					return
+				}
+				continue
+			}
+			ok, err := predicate(s.ctx, item.value)
+			if err != nil {
+				if !yield(result[T]{err: err}) {
+					return
+				}
+				continue
+			}
+			if !ok || !yield(item) {
+				return
+			}
+		}
+	})
+}
+
+// SkipWhile drops values as long as the predicate returns true and then emits every
+// remaining element without evaluating the predicate again.
+// Errors are passed through and are not evaluated by the predicate.
+func (s IoStream[T]) SkipWhile(predicate func(T) bool) IoStream[T] {
+	return s.SkipWhileAsync(func(_ context.Context, item T) (bool, error) {
+		return predicate(item), nil
+	})
+}
+
+// SkipWhileAsync is SkipWhile with a context-aware predicate. A predicate error is
+// emitted as an error element; the stream continues and the predicate keeps being
+// evaluated on subsequent values.
+func (s IoStream[T]) SkipWhileAsync(predicate func(ctx context.Context, item T) (bool, error)) IoStream[T] {
+	return s.derive(func(yield func(result[T]) bool) {
+		skipping := true
+		for item := range s.seq {
+			if item.err != nil {
+				if !yield(item) {
+					return
+				}
+				continue
+			}
+			if skipping {
+				skip, err := predicate(s.ctx, item.value)
+				if err != nil {
+					if !yield(result[T]{err: err}) {
+						return
+					}
+					continue
+				}
+				if skip {
+					continue
+				}
+				skipping = false
+			}
+			if !yield(item) {
+				return
+			}
+		}
+	})
+}
+
+// CompactFunc drops consecutive duplicate values: a value is emitted only if eq reports
+// it different from the previously emitted value. Like slices.CompactFunc it removes
+// duplicates only when they are adjacent, so the input must be sorted or grouped for a
+// global de-duplication. Memory is O(1). Errors pass through and do not reset the
+// comparison: a value, an error, then the same value yields the value once.
+func (s IoStream[T]) CompactFunc(eq func(a, b T) bool) IoStream[T] {
+	return s.derive(func(yield func(result[T]) bool) {
+		var last T
+		first := true
+		for item := range s.seq {
+			if item.err == nil {
+				if !first && eq(last, item.value) {
+					continue
+				}
+				first = false
+				last = item.value
 			}
 			if !yield(item) {
 				return
@@ -390,30 +486,6 @@ func (s IoStream[T]) CircuitBreaker(maxConsecutiveFailures int) IoStream[T] {
 	})
 }
 
-// IoFlatten unwraps a stream of slices into a flat stream of individual elements.
-// It is the IoStream counterpart of Flatten; use it with Through.
-func IoFlatten[E any](stream IoStream[[]E]) IoStream[E] {
-	return stream.derive(func(yield func(result[E]) bool) {
-		for chunk := range stream.seq {
-			if chunk.err != nil {
-				if !yield(result[E]{err: chunk.err}) {
-					return
-				}
-				continue
-			}
-			for _, val := range chunk.value {
-				if !yield(result[E]{value: val}) {
-					return
-				}
-			}
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Terminal operations
-// ---------------------------------------------------------------------------
-
 // Seq returns the stream as a native (value, error) iterator. Elements tolerated by a
 // CircuitBreaker are yielded with an error matching ErrSuppressed; iteration stops after
 // the first error that is not suppressed.
@@ -428,27 +500,6 @@ func (s IoStream[T]) Seq() iter.Seq2[T, error] {
 			}
 		}
 	}
-}
-
-// each drives every terminal operation: it skips elements carrying a suppressed error,
-// returns the first other error, and stops early when fn returns false.
-func (s IoStream[T]) each(fn func(T) (bool, error)) error {
-	for item := range s.seq {
-		if item.err != nil {
-			if isSuppressed(item.err) {
-				continue
-			}
-			return item.err
-		}
-		next, err := fn(item.value)
-		if err != nil {
-			return err
-		}
-		if !next {
-			return nil
-		}
-	}
-	return nil
 }
 
 // Collect materializes the stream into a slice. Elements collected before an error
@@ -596,71 +647,291 @@ func (s IoStream[T]) Last() (T, bool, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Concurrency plumbing
+// Functions
 // ---------------------------------------------------------------------------
 
-// runConcurrent wires a feeder goroutine, a worker pool and a closer:
-// the feeder reads inputSeq into inChan (forwarding upstream errors straight to
-// outputChan), workers apply workerFn and push to outputChan, and the closer closes
-// outputChan once all workers exit.
-func runConcurrent[T any, R any](
-	ctx context.Context,
-	inputSeq iter.Seq[result[T]],
-	concurrency int,
-	workerFn func(ctx context.Context, item T) (R, error),
-	outputChan chan<- result[R],
-) {
-	inChan := make(chan T, concurrency)
+// IoCompact drops consecutive duplicate values using ==. It is the IoStream counterpart
+// of Compact; use it with Through. See IoStream.CompactFunc for the semantics.
+func IoCompact[T comparable](stream IoStream[T]) IoStream[T] {
+	return stream.CompactFunc(func(a, b T) bool { return a == b })
+}
 
-	// Every goroutine that may write to outputChan (feeder + workers) is tracked by wg,
-	// so the closer never closes the channel while a writer is still alive.
-	var wg sync.WaitGroup
-	wg.Add(1 + concurrency)
-
-	go func() {
-		defer wg.Done()
-		defer close(inChan)
-		for item := range inputSeq {
-			if item.err != nil {
-				select {
-				case outputChan <- result[R]{err: item.err}:
-				case <-ctx.Done():
+// IoConcat emits every element of the first stream, then of the second, and so on.
+// Order is deterministic and a stream is not touched until all previous ones are
+// exhausted. Errors pass through at their position. The result inherits the options of
+// the first stream and a context that is cancelled when any source context is (see
+// mergeContexts); with no arguments it returns an empty stream.
+func IoConcat[T any](streams ...IoStream[T]) IoStream[T] {
+	if len(streams) == 0 {
+		return emptyIoStream[T]()
+	}
+	out := streams[0]
+	out.ctx = mergeContexts(streams)
+	return out.derive(func(yield func(result[T]) bool) {
+		for _, s := range streams {
+			for item := range s.seq {
+				if !yield(item) {
 					return
 				}
-				continue
-			}
-			select {
-			case inChan <- item.value:
-			case <-ctx.Done():
-				return
 			}
 		}
-	}()
+	})
+}
 
-	for range concurrency {
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case val, ok := <-inChan:
-					if !ok {
-						return
-					}
-					res, err := workerFn(ctx, val)
+// IoMerge consumes all streams concurrently, one goroutine per source, and emits
+// elements as they arrive. The interleaving is not deterministic. Errors pass through
+// at their arrival position. When the consumer stops, or when the context of any
+// source is cancelled, every source goroutine is released and the cancellation is
+// reported as an error element carrying the original cause. The result inherits the
+// options of the first stream and the merged context; with no arguments it returns an
+// empty stream.
+//
+// There is no Stream counterpart: merging requires goroutines and a context to shut
+// them down, which the synchronous Stream does not have.
+func IoMerge[T any](streams ...IoStream[T]) IoStream[T] {
+	if len(streams) == 0 {
+		return emptyIoStream[T]()
+	}
+	head := streams[0]
+	head.ctx = mergeContexts(streams)
+	return head.derive(func(yield func(result[T]) bool) {
+		ctx, cancel := context.WithCancel(head.ctx)
+		defer cancel()
+
+		out := make(chan result[T], len(streams))
+		var wg sync.WaitGroup
+		wg.Add(len(streams))
+		for _, s := range streams {
+			go func() {
+				defer wg.Done()
+				for item := range s.seq {
 					select {
-					case outputChan <- result[R]{value: res, err: err}:
+					case out <- item:
 					case <-ctx.Done():
 						return
 					}
 				}
-			}
+			}()
+		}
+		go func() {
+			wg.Wait()
+			close(out)
 		}()
+
+		for item := range out {
+			if !yield(item) {
+				return
+			}
+		}
+		if head.ctx.Err() != nil {
+			yield(result[T]{err: context.Cause(head.ctx)})
+		}
+	})
+}
+
+// IoFlatten unwraps a stream of slices into a flat stream of individual elements.
+// It is the IoStream counterpart of Flatten; use it with Through.
+func IoFlatten[E any](stream IoStream[[]E]) IoStream[E] {
+	return stream.derive(func(yield func(result[E]) bool) {
+		for chunk := range stream.seq {
+			if chunk.err != nil {
+				if !yield(result[E]{err: chunk.err}) {
+					return
+				}
+				continue
+			}
+			for _, val := range chunk.value {
+				if !yield(result[E]{value: val}) {
+					return
+				}
+			}
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Internals
+// ---------------------------------------------------------------------------
+
+// result is the internal element wrapper: either a value or an error.
+type result[T any] struct {
+	value T
+	err   error
+}
+
+type options struct {
+	concurrency int
+	logger      *slog.Logger
+}
+
+func defaultOptions() options {
+	return options{
+		concurrency: 1,
+		logger:      slog.New(slog.DiscardHandler),
+	}
+}
+
+// mergeContexts returns a context that carries the values and deadline of the first
+// stream's context and is cancelled as soon as any stream's context is cancelled, with
+// the original cause preserved (see context.Cause). Identical contexts are registered
+// once. Contexts are compared with ==, which holds for every context.Context produced
+// by the standard library.
+func mergeContexts[T any](streams []IoStream[T]) context.Context {
+	head := streams[0].ctx
+	seen := []context.Context{head}
+	for _, s := range streams[1:] {
+		if !slices.Contains(seen, s.ctx) {
+			seen = append(seen, s.ctx)
+		}
+	}
+	others := seen[1:]
+	if len(others) == 0 {
+		return head // every stream shares the head context; nothing to merge
 	}
 
-	go func() {
-		wg.Wait()
-		close(outputChan)
-	}()
+	merged, cancel := context.WithCancelCause(head)
+	link := func(other context.Context) {
+		context.AfterFunc(other, func() { cancel(context.Cause(other)) })
+	}
+	link(others[0])
+	for _, other := range others[1:] {
+		link(other)
+	}
+	return merged
+}
+
+// emptyIoStream returns a stream that ends immediately, for combinators called with no inputs.
+func emptyIoStream[T any]() IoStream[T] {
+	return IoStream[T]{
+		options: defaultOptions(),
+		ctx:     context.Background(),
+		seq:     func(func(result[T]) bool) {},
+	}
+}
+
+func (s IoStream[T]) getOptions(opts ...Option) options {
+	o := s.options
+	for _, apply := range opts {
+		apply(&o)
+	}
+	return o
+}
+
+// derive builds a new stream of another element type that inherits ctx and options.
+func (s IoStream[T]) derive[R any](seq iter.Seq[result[R]]) IoStream[R] {
+	return IoStream[R]{options: s.options, ctx: s.ctx, seq: seq}
+}
+
+// errStream builds a stream that emits a single error and ends.
+func (s IoStream[T]) errStream[R any](err error) IoStream[R] {
+	return s.derive(func(yield func(result[R]) bool) {
+		yield(result[R]{err: err})
+	})
+}
+
+// each drives every terminal operation: it skips elements carrying a suppressed error,
+// returns the first other error, and stops early when fn returns false.
+func (s IoStream[T]) each(fn func(T) (bool, error)) error {
+	for item := range s.seq {
+		if item.err != nil {
+			if isSuppressed(item.err) {
+				continue
+			}
+			return item.err
+		}
+		next, err := fn(item.value)
+		if err != nil {
+			return err
+		}
+		if !next {
+			return nil
+		}
+	}
+	return nil
+}
+
+// stream assembles an IoStream from the builder's context and options.
+func (b IoBuilder) stream[T any](seq iter.Seq[result[T]]) IoStream[T] {
+	return IoStream[T]{options: b.options, ctx: b.ctx, seq: seq}
+}
+
+// mapAsyncConcurrent is the WithParallel(n > 1) path of MapAsync and FilterAsync,
+// returned as a bare sequence so callers can wrap it in any element type. It wires three kinds
+// of goroutines: a feeder that reads the upstream sequence into inChan (forwarding
+// upstream errors straight to outChan), n workers that apply mapFn and push results to
+// outChan, and a closer that closes outChan once every writer has exited. Every writer
+// is tracked by the WaitGroup so the channel is never closed under a live sender.
+// A consumer stopping early cancels ctx, which releases all of them.
+func (s IoStream[T]) mapAsyncConcurrent[R any](mapFn func(ctx context.Context, item T) (R, error), concurrency int) iter.Seq[result[R]] {
+	return func(yield func(result[R]) bool) {
+		ctx, cancel := context.WithCancel(s.ctx)
+		defer cancel()
+
+		inChan := make(chan T, concurrency)
+		outChan := make(chan result[R], concurrency)
+
+		var wg sync.WaitGroup
+		wg.Add(1 + concurrency)
+
+		// feeder
+		go func() {
+			defer wg.Done()
+			defer close(inChan)
+			for item := range s.seq {
+				if item.err != nil {
+					select {
+					case outChan <- result[R]{err: item.err}:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				select {
+				case inChan <- item.value:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+
+		// workers
+		for range concurrency {
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case val, ok := <-inChan:
+						if !ok {
+							return
+						}
+						res, err := mapFn(ctx, val)
+						select {
+						case outChan <- result[R]{value: res, err: err}:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}
+			}()
+		}
+
+		// closer
+		go func() {
+			wg.Wait()
+			close(outChan)
+		}()
+
+		for res := range outChan {
+			if !yield(res) {
+				return
+			}
+		}
+		// Writers bail out silently on ctx.Done(); make sure a cancellation of the
+		// stream context still surfaces to the consumer as an error.
+		if err := s.ctx.Err(); err != nil {
+			yield(result[R]{err: err})
+		}
+	}
 }

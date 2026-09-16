@@ -10,15 +10,42 @@ import (
 	"github.com/shults/chunkflow/seq"
 )
 
-func ExampleNewIoStream() {
+func ExampleNewIo() {
 	ctx := context.Background()
 
-	upper, err := chunkflow.NewIoStream(ctx, seq.Items("go", "iter", "seq")).
+	upper, err := chunkflow.NewIo(ctx).Seq(seq.Items("go", "iter", "seq")).
 		Map(strings.ToUpper).
 		Collect()
 
 	fmt.Println(upper, err)
 	// Output: [GO ITER SEQ] <nil>
+}
+
+func ExampleIoBuilder_Chan() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// A producer that respects the same context: if the consumer stops early the
+	// producer is released too, instead of blocking forever on a send.
+	jobs := make(chan int)
+	go func() {
+		defer close(jobs)
+		for i := 1; ; i++ {
+			select {
+			case jobs <- i:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	firstThree, err := chunkflow.NewIo(ctx).Chan(jobs).
+		Map(func(i int) int { return i * i }).
+		Take(3).
+		Collect()
+
+	fmt.Println(firstThree, err)
+	// Output: [1 4 9] <nil>
 }
 
 func ExampleIoStream_MapAsync() {
@@ -31,7 +58,7 @@ func ExampleIoStream_MapAsync() {
 	}
 
 	// The first error stops the pipeline; values collected before it are returned.
-	nums, err := chunkflow.NewIoStream(ctx, seq.Items("1", "2", "x", "4")).
+	nums, err := chunkflow.NewIo(ctx).Seq(seq.Items("1", "2", "x", "4")).
 		MapAsync(parse).
 		Collect()
 
@@ -45,7 +72,7 @@ func ExampleIoStream_MapAsync_parallel() {
 	square := func(_ context.Context, i int) (int, error) { return i * i, nil }
 
 	// With WithParallel(n) the output order is not guaranteed, so reduce instead of collecting.
-	sum, err := chunkflow.NewIoStream(ctx, seq.RangeInclusive(1, 100)).
+	sum, err := chunkflow.NewIo(ctx).Seq(seq.RangeInclusive(1, 100)).
 		MapAsync(square, chunkflow.WithParallel(4)).
 		Reduce(0, func(item, acc int) int { return acc + item })
 
@@ -53,11 +80,30 @@ func ExampleIoStream_MapAsync_parallel() {
 	// Output: 338350 <nil>
 }
 
+func ExampleIoStream_TapAsync() {
+	ctx := context.Background()
+
+	// TapAsync can veto an element by returning an error, e.g. an audit check.
+	audit := func(_ context.Context, amount int) error {
+		if amount > 100 {
+			return fmt.Errorf("amount %d exceeds limit", amount)
+		}
+		return nil
+	}
+
+	got, err := chunkflow.NewIo(ctx).Seq(seq.Items(10, 50, 500, 20)).
+		TapAsync(audit).
+		Collect()
+
+	fmt.Println(got, err)
+	// Output: [10 50] amount 500 exceeds limit
+}
+
 func ExampleIoStream_Chunk() {
 	ctx := context.Background()
 
 	// Chunk turns N+1 round trips into N/size batches.
-	err := chunkflow.NewIoStream(ctx, seq.Range(1, 8)).
+	err := chunkflow.NewIo(ctx).Seq(seq.Range(1, 8)).
 		Chunk(3).
 		ForEach(func(batch []int) {
 			fmt.Println("insert", batch)
@@ -68,6 +114,43 @@ func ExampleIoStream_Chunk() {
 	// insert [1 2 3]
 	// insert [4 5 6]
 	// insert [7]
+	// <nil>
+}
+
+// ExampleIoStream_Chunk_deduplication shows the recommended way to drop duplicates on a
+// large stream: batch with Chunk, ask the store once per batch, flatten back. The library
+// deliberately has no Distinct operator, because a global "seen" set has to live somewhere
+// with O(unique) memory, and that somewhere should be the user's choice (a database, a
+// key-value store, a Bloom filter, ...), not a hidden map inside the pipeline.
+func ExampleIoStream_Chunk_deduplication() {
+	ctx := context.Background()
+
+	// Stand-in for an external store, e.g. an `INSERT ... ON CONFLICT DO NOTHING RETURNING id`.
+	store := map[string]struct{}{}
+	insertNew := func(_ context.Context, batch []string) ([]string, error) {
+		var fresh []string
+		for _, id := range batch {
+			if _, dup := store[id]; dup {
+				continue
+			}
+			store[id] = struct{}{}
+			fresh = append(fresh, id)
+		}
+		return fresh, nil // one round trip per batch, not per element
+	}
+
+	err := chunkflow.NewIo(ctx).Seq(seq.Items("a", "b", "a", "c", "b", "d", "a")).
+		Chunk[[]string](3).
+		MapAsync(insertNew).
+		Through(chunkflow.IoFlatten).
+		ForEach(func(id string) { fmt.Println("new:", id) })
+
+	fmt.Println(err)
+	// Output:
+	// new: a
+	// new: b
+	// new: c
+	// new: d
 	// <nil>
 }
 
@@ -83,7 +166,7 @@ func ExampleIoStream_CircuitBreaker() {
 	}
 
 	// Up to 2 consecutive failures are tolerated; the 3rd in a row would trip the breaker.
-	got, err := chunkflow.NewIoStream(ctx, seq.Range(1, 7)).
+	got, err := chunkflow.NewIo(ctx).Seq(seq.Range(1, 7)).
 		MapAsync(fetch).
 		CircuitBreaker(3).
 		Collect()
@@ -103,7 +186,7 @@ func ExampleIoStream_CircuitBreaker_tripped() {
 		return i, nil
 	}
 
-	got, err := chunkflow.NewIoStream(ctx, seq.Numbers(1)). // infinite source
+	got, err := chunkflow.NewIo(ctx).Seq(seq.Numbers(1)). // infinite source
 								MapAsync(fetch).
 								CircuitBreaker(3).
 								Collect()
@@ -131,7 +214,7 @@ func ExampleIoStream_Seq() {
 	// Seq exposes suppressed errors instead of hiding them, so the consumer can
 	// count or log what the breaker tolerated.
 	tolerated := 0
-	for v, err := range chunkflow.NewIoStream(ctx, seq.Range(0, 6)).MapAsync(rejectOdd).CircuitBreaker(2).Seq() {
+	for v, err := range chunkflow.NewIo(ctx).Seq(seq.Range(0, 6)).MapAsync(rejectOdd).CircuitBreaker(2).Seq() {
 		switch {
 		case err == nil:
 			fmt.Println("value", v)
@@ -149,7 +232,7 @@ func ExampleIoStream_Seq() {
 	// tolerated 3
 }
 
-func ExampleNewIoStream2() {
+func ExampleIoBuilder_Seq2() {
 	ctx := context.Background()
 
 	// A (value, error) iterator, e.g. wrapping a database cursor.
@@ -162,7 +245,7 @@ func ExampleNewIoStream2() {
 		yield("", errors.New("connection lost"))
 	}
 
-	got, err := chunkflow.NewIoStream2(ctx, rows).Collect()
+	got, err := chunkflow.NewIo(ctx).Seq2(rows).Collect()
 	fmt.Println(got, err)
 	// Output: [alice bob] connection lost
 }
@@ -175,7 +258,7 @@ func ExampleIoStream_Through() {
 		return s.Filter(func(i int) bool { return i%2 == 0 })
 	}
 
-	got, err := chunkflow.NewIoStream(ctx, seq.Range(0, 10)).
+	got, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).
 		Through(onlyEven).
 		Chunk[[]int](2).
 		Through(chunkflow.IoFlatten).
@@ -183,4 +266,17 @@ func ExampleIoStream_Through() {
 
 	fmt.Println(got, err)
 	// Output: [0 2 4 6 8] <nil>
+}
+
+func ExampleIoMerge() {
+	ctx := context.Background()
+
+	// Two independent sources (think: two shards) consumed concurrently. The interleaving is
+	// not deterministic, so aggregate instead of printing the order.
+	shardA := chunkflow.NewIo(ctx).Seq(seq.Range(0, 50))
+	shardB := chunkflow.NewIo(ctx).Seq(seq.Range(50, 100))
+
+	n, err := chunkflow.IoMerge(shardA, shardB).Count()
+	fmt.Println(n, err)
+	// Output: 100 <nil>
 }

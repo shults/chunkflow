@@ -28,3 +28,20 @@ func ExampleNumbers() {
 	// 11
 	// 12
 }
+
+func ExampleIterate() {
+	// Powers of two until the first one above 100.
+	for n := range seq.Iterate(1, func(x int) int { return x * 2 }) {
+		if n > 100 {
+			break
+		}
+		fmt.Print(n, " ")
+	}
+	fmt.Println()
+	// Output: 1 2 4 8 16 32 64
+}
+
+func ExampleRepeat() {
+	fmt.Println(slices.Collect(seq.Repeat("na", 4)))
+	// Output: [na na na na]
+}

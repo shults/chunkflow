@@ -40,6 +40,57 @@ func (a Stream[T]) Take(nr int) Stream[T] {
 	})
 }
 
+// TakeWhile emits elements as long as the predicate returns true and short-circuits
+// at the first element for which it returns false. That element is not emitted and
+// nothing further is pulled from the source.
+func (a Stream[T]) TakeWhile(predicate func(T) bool) Stream[T] {
+	return NewStream(func(yield func(T) bool) {
+		for val := range a.seq {
+			if !predicate(val) || !yield(val) {
+				return
+			}
+		}
+	})
+}
+
+// SkipWhile drops elements as long as the predicate returns true and then emits every
+// remaining element without evaluating the predicate again.
+func (a Stream[T]) SkipWhile(predicate func(T) bool) Stream[T] {
+	return NewStream(func(yield func(T) bool) {
+		skipping := true
+		for val := range a.seq {
+			if skipping && predicate(val) {
+				continue
+			}
+			skipping = false
+			if !yield(val) {
+				return
+			}
+		}
+	})
+}
+
+// CompactFunc drops consecutive duplicates: an element is emitted only if eq reports it
+// different from the previously emitted element. Like slices.CompactFunc and uniq(1) it
+// removes duplicates only when they are adjacent, so the input must be sorted or grouped
+// for a global de-duplication. Memory is O(1): only the last emitted element is kept.
+func (a Stream[T]) CompactFunc(eq func(a, b T) bool) Stream[T] {
+	return NewStream(func(yield func(T) bool) {
+		var last T
+		first := true
+		for val := range a.seq {
+			if !first && eq(last, val) {
+				continue
+			}
+			first = false
+			last = val
+			if !yield(val) {
+				return
+			}
+		}
+	})
+}
+
 // Skip bypasses the first nr elements and emits the remainder of the stream.
 func (a Stream[T]) Skip(nr int) Stream[T] {
 	return NewStream(func(yield func(T) bool) {
@@ -53,6 +104,16 @@ func (a Stream[T]) Skip(nr int) Stream[T] {
 				return
 			}
 		}
+	})
+}
+
+// Tap invokes fn for every element and passes the element through unchanged.
+// It is meant for side effects such as logging or metrics in the middle of a chain
+// and is equivalent to Map(func(v T) T { fn(v); return v }).
+func (a Stream[T]) Tap(fn func(T)) Stream[T] {
+	return a.Map(func(val T) T {
+		fn(val)
+		return val
 	})
 }
 
@@ -192,6 +253,29 @@ func (a Stream[T]) Last() (T, bool) {
 		ok = true
 	}
 	return item, ok
+}
+
+// Compact drops consecutive duplicates using ==. It requires comparable T, which a method
+// cannot demand, so it is a top-level function; use it with Through. See CompactFunc for
+// the semantics and the sorted-or-grouped input precondition.
+func Compact[T comparable](stream Stream[T]) Stream[T] {
+	return stream.CompactFunc(func(a, b T) bool { return a == b })
+}
+
+// Concat emits every element of the first stream, then of the second, and so on.
+// Order is deterministic and a stream is not touched until all previous ones are
+// exhausted, so short-circuiting inside the first stream never pulls from the second.
+// With no arguments it returns an empty stream. The name follows slices.Concat.
+func Concat[T any](streams ...Stream[T]) Stream[T] {
+	return NewStream(func(yield func(T) bool) {
+		for _, s := range streams {
+			for val := range s.seq {
+				if !yield(val) {
+					return
+				}
+			}
+		}
+	})
 }
 
 // Flatten unwraps a stream of slices into a continuous, flat stream of individual elements.

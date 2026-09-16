@@ -20,17 +20,77 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 
 	t.Run("Filter drops non-matching items", func(t *testing.T) {
 		res, err := chunkflow.
-			NewIoStream(ctx, seq.Range(1, 10)).
+			NewIo(ctx).Seq(seq.Range(1, 10)).
 			Filter(func(i int) bool { return i%2 == 0 }).
 			Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{2, 4, 6, 8}, res)
 	})
 
+	t.Run("Tap observes values and passes them through", func(t *testing.T) {
+		var seen []int
+		res, err := chunkflow.
+			NewIo(ctx).Seq(seq.Range(1, 4)).
+			Tap(func(i int) { seen = append(seen, i) }).
+			Collect()
+		require.NoError(t, err)
+		assert.Equal(t, []int{1, 2, 3}, res)
+		assert.Equal(t, []int{1, 2, 3}, seen)
+	})
+
+	t.Run("Tap never sees errors and lets them flow", func(t *testing.T) {
+		var seen []int
+		res, err := chunkflow.
+			NewIo(ctx).Seq(seq.Range(0, 10)).
+			MapAsync(failing). // 2,3,4 fail
+			Tap(func(i int) { seen = append(seen, i) }).
+			CircuitBreaker(100).
+			Collect()
+		require.NoError(t, err)
+		assert.Equal(t, []int{0, 1, 5, 6, 7, 8, 9}, res)
+		assert.Equal(t, []int{0, 1, 5, 6, 7, 8, 9}, seen)
+	})
+
+	t.Run("TapAsync error replaces the value and is fatal for terminals", func(t *testing.T) {
+		errAudit := errors.New("audit")
+		res, err := chunkflow.
+			NewIo(ctx).Seq(seq.Range(1, 6)).
+			TapAsync(func(_ context.Context, i int) error {
+				if i == 3 {
+					return errAudit
+				}
+				return nil
+			}).
+			Collect()
+		require.ErrorIs(t, err, errAudit)
+		assert.Equal(t, []int{1, 2}, res)
+	})
+
+	t.Run("TapAsync receives the stream context and runs in parallel", func(t *testing.T) {
+		type key struct{}
+		cctx := context.WithValue(ctx, key{}, "tap")
+		var okCtx, calls atomic.Int32
+
+		res, err := chunkflow.
+			NewIo(cctx).Seq(seq.Range(0, 20)).
+			TapAsync(func(ctx context.Context, _ int) error {
+				calls.Add(1)
+				if v, _ := ctx.Value(key{}).(string); v == "tap" {
+					okCtx.Add(1)
+				}
+				return nil
+			}, chunkflow.WithParallel(4)).
+			Collect()
+		require.NoError(t, err)
+		assert.Len(t, res, 20)
+		assert.Equal(t, int32(20), calls.Load())
+		assert.Equal(t, int32(20), okCtx.Load())
+	})
+
 	t.Run("Any short-circuits on first match", func(t *testing.T) {
 		evaluated := 0
 		ok, err := chunkflow.
-			NewIoStream(ctx, seq.Numbers(1)).
+			NewIo(ctx).Seq(seq.Numbers(1)).
 			Map(func(i int) int {
 				evaluated++
 				return i
@@ -42,12 +102,12 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	})
 
 	t.Run("First returns element or reports empty", func(t *testing.T) {
-		val, ok, err := chunkflow.NewIoStream(ctx, seq.Items(99, 100)).First()
+		val, ok, err := chunkflow.NewIo(ctx).Seq(seq.Items(99, 100)).First()
 		require.NoError(t, err)
 		assert.True(t, ok)
 		assert.Equal(t, 99, val)
 
-		val, ok, err = chunkflow.NewIoStream(ctx, seq.Items[int]()).First()
+		val, ok, err = chunkflow.NewIo(ctx).Seq(seq.Items[int]()).First()
 		require.NoError(t, err)
 		assert.False(t, ok)
 		assert.Equal(t, 0, val)
@@ -56,7 +116,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	t.Run("First propagates error", func(t *testing.T) {
 		boom := errors.New("boom")
 		_, ok, err := chunkflow.
-			NewIoStream(ctx, seq.Items(1)).
+			NewIo(ctx).Seq(seq.Items(1)).
 			MapAsync(func(context.Context, int) (int, error) { return 0, boom }).
 			First()
 		require.ErrorIs(t, err, boom)
@@ -64,7 +124,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	})
 
 	t.Run("Last returns final element", func(t *testing.T) {
-		val, ok, err := chunkflow.NewIoStream(ctx, seq.Items(1, 2, 99)).Last()
+		val, ok, err := chunkflow.NewIo(ctx).Seq(seq.Items(1, 2, 99)).Last()
 		require.NoError(t, err)
 		assert.True(t, ok)
 		assert.Equal(t, 99, val)
@@ -75,7 +135,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		var vals []int
 		var errs []error
 		s := chunkflow.
-			NewIoStream(ctx, seq.Items(1, 2, 3)).
+			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
 			MapAsync(func(_ context.Context, i int) (int, error) {
 				if i == 2 {
 					return 0, boom
@@ -90,10 +150,10 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		assert.Equal(t, []error{nil, boom}, errs)
 	})
 
-	t.Run("NewIoStream2 round-trips through Seq", func(t *testing.T) {
+	t.Run("Seq2 round-trips through Seq", func(t *testing.T) {
 		boom := errors.New("boom")
 		src := chunkflow.
-			NewIoStream(ctx, seq.Items(1, 2, 3)).
+			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
 			MapAsync(func(_ context.Context, i int) (int, error) {
 				if i == 3 {
 					return 0, boom
@@ -101,14 +161,14 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 				return i * 10, nil
 			})
 
-		res, err := chunkflow.NewIoStream2(ctx, src.Seq()).Collect()
+		res, err := chunkflow.NewIo(ctx).Seq2(src.Seq()).Collect()
 		require.ErrorIs(t, err, boom)
 		assert.Equal(t, []int{10, 20}, res)
 	})
 
 	t.Run("IoFlatten via Through", func(t *testing.T) {
 		res, err := chunkflow.
-			NewIoStream(ctx, seq.Range(1, 6)).
+			NewIo(ctx).Seq(seq.Range(1, 6)).
 			Chunk[[]int](2).
 			Through(chunkflow.IoFlatten).
 			Map(func(i int) int { return i * 10 }).
@@ -118,13 +178,13 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	})
 
 	t.Run("Count returns number of elements or count before error", func(t *testing.T) {
-		n, err := chunkflow.NewIoStream(ctx, seq.Range(0, 7)).Count()
+		n, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 7)).Count()
 		require.NoError(t, err)
 		assert.Equal(t, 7, n)
 
 		boom := errors.New("boom")
 		n, err = chunkflow.
-			NewIoStream(ctx, seq.Items(1, 2, 3)).
+			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
 			MapAsync(func(_ context.Context, i int) (int, error) {
 				if i == 3 {
 					return 0, boom
@@ -140,7 +200,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		boom := errors.New("boom")
 		var seen []int
 		err := chunkflow.
-			NewIoStream(ctx, seq.Items(1, 2, 3)).
+			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
 			ForEachAsync(func(_ context.Context, i int) error {
 				seen = append(seen, i)
 				if i == 2 {
@@ -180,7 +240,7 @@ func TestIoStream_Options(t *testing.T) {
 		}()
 
 		res, err := chunkflow.
-			NewIoStream(ctx, seq.Range(0, workers)).
+			NewIo(ctx).Seq(seq.Range(0, workers)).
 			Opts(chunkflow.WithParallel(workers)).
 			Skip(0). // derived stream must still carry the configured concurrency
 			MapAsync(func(_ context.Context, i int) (int, error) {
@@ -200,14 +260,14 @@ func TestIoStream_Options(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 		// ReduceAsync warns when asked for concurrency > 1
-		_, err := chunkflow.NewIoStream(ctx, seq.Items(1, 2)).
+		_, err := chunkflow.NewIo(ctx).Seq(seq.Items(1, 2)).
 			Opts(chunkflow.WithLogger(logger)).
 			ReduceAsync(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil }, chunkflow.WithParallel(2))
 		require.NoError(t, err)
 		assert.Contains(t, buf.String(), "level=WARN")
 
 		buf.Reset()
-		_, err = chunkflow.NewIoStream(ctx, seq.Items(1, 2)).
+		_, err = chunkflow.NewIo(ctx).Seq(seq.Items(1, 2)).
 			Opts(chunkflow.WithLogger(logger)).
 			ReduceAsync(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil },
 				chunkflow.WithParallel(2), chunkflow.WithDiscardLogger())
@@ -217,7 +277,7 @@ func TestIoStream_Options(t *testing.T) {
 
 	t.Run("FilterAsync rejects concurrency below 1", func(t *testing.T) {
 		_, err := chunkflow.
-			NewIoStream(ctx, seq.Items(1)).
+			NewIo(ctx).Seq(seq.Items(1)).
 			FilterAsync(func(context.Context, int) (bool, error) { return true, nil }, chunkflow.WithParallel(0)).
 			Collect()
 		assert.ErrorContains(t, err, "concurrency must be at least 1")
@@ -226,7 +286,7 @@ func TestIoStream_Options(t *testing.T) {
 	t.Run("cancelled context surfaces as error", func(t *testing.T) {
 		cctx, cancel := context.WithCancel(ctx)
 		cancel()
-		_, err := chunkflow.NewIoStream(cctx, seq.Numbers(0)).Take(3).Collect()
+		_, err := chunkflow.NewIo(cctx).Seq(seq.Numbers(0)).Take(3).Collect()
 		assert.ErrorIs(t, err, context.Canceled)
 	})
 
@@ -238,13 +298,13 @@ func TestIoStream_Options(t *testing.T) {
 			cancel()
 
 			_, err := chunkflow.
-				NewIoStream(cctx, seq.Range(0, 100)).
+				NewIo(cctx).Seq(seq.Range(0, 100)).
 				MapAsync(func(_ context.Context, i int) (int, error) { return i, nil }, chunkflow.WithParallel(4)).
 				Collect()
 			require.ErrorIs(t, err, context.Canceled)
 
 			_, err = chunkflow.
-				NewIoStream(cctx, seq.Range(0, 100)).
+				NewIo(cctx).Seq(seq.Range(0, 100)).
 				FilterAsync(func(context.Context, int) (bool, error) { return true, nil }, chunkflow.WithParallel(4)).
 				Collect()
 			require.ErrorIs(t, err, context.Canceled)

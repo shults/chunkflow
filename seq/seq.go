@@ -1,5 +1,5 @@
 // Package seq provides generators of native Go iterators (iter.Seq) that can be
-// fed into chunkflow.NewStream or chunkflow.NewIoStream, or used directly in
+// fed into chunkflow.NewStream or chunkflow.NewIo(ctx).Seq, or used directly in
 // range-over-func loops.
 package seq
 
@@ -53,6 +53,31 @@ func Numbers[T Integer](start T) iter.Seq[T] {
 	return func(yield func(T) bool) {
 		for i := start; ; i++ {
 			if !yield(i) {
+				return
+			}
+		}
+	}
+}
+
+// Repeat yields val exactly n times. It is the finite form of Const; n <= 0 yields nothing.
+func Repeat[T any](val T, n int) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		for range max(n, 0) {
+			if !yield(val) {
+				return
+			}
+		}
+	}
+}
+
+// Iterate yields seed, fn(seed), fn(fn(seed)), ... forever. The sequence is infinite;
+// combine it with Take, TakeWhile or another short-circuiting operation. Every
+// iteration starts again from seed, so the sequence can be ranged over repeatedly.
+// Numbers(start) is the special case Iterate(start, func(x) x+1).
+func Iterate[T any](seed T, fn func(T) T) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		for cur := seed; ; cur = fn(cur) {
+			if !yield(cur) {
 				return
 			}
 		}
