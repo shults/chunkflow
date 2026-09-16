@@ -1,89 +1,38 @@
 # Roadmap
 
-Working TODO list for ChunkFlow. Items are grouped into phases; a phase should be
-finished (or consciously deferred) before the next one starts. Tick items off as
-they land on `master`.
+Working TODO list for ChunkFlow. Phases are finished (or consciously deferred) in order.
+Design decisions and their reasons live in [CONVENTIONS.md](CONVENTIONS.md); this file only
+tracks what is left to do. Items that were removed rather than done are kept struck through with
+the reason, so the question is not reopened by accident.
 
-## Phase 1 — Safety net (no API changes)
+## Done (v0.0.1 → v0.0.2)
 
-Goal: every future change is guarded by CI, leak detection and coverage.
+- Safety net: CI (gofmt, vet, golangci-lint, race tests on 1.27.x and stable, govulncheck),
+  `Makefile` + versioned pre-commit hook, `goleak` on every concurrent test, 100% statement
+  coverage, runnable `Example*` tests, `doc.go`.
+- One stream type. The in-memory `Stream` was removed and `IoStream` took its name; the old type
+  survives privately in `bench_test.go` as the baseline for what error/context plumbing costs.
+- Error model: errors travel as elements, operators work on values only, terminals stop at the
+  first error, `CircuitBreaker` marks tolerated errors with `ErrSuppressed`, panics in callbacks
+  become `ErrPanic` (never suppressed), `WithOnError` hook on terminals.
+- `New(ctx, opts...)` builder with `Seq`, `Seq2`, `Chan`; `Option` / `StepOption` split;
+  `WithParallel`, `WithOnError`; the logger is gone.
+- Operators: `Tap`, `TakeWhile`, `SkipWhile`, `Compact`/`CompactFunc`, `Concat`, `Merge` (with
+  merged contexts), `Count`; `*Ctx` naming; `Reduce[R]` with `(acc, item)`.
+- `seq`: `Items`, `Range`, `RangeInclusive`, `Numbers`, `Const`, `Repeat`, `Iterate`.
+- ~~`Distinct`~~ — a global "seen" set belongs to the user's store; the batched pattern is
+  `ExampleStream_Chunk_deduplication`.
+- ~~`WithLogger` / `WithDiscardLogger`~~ — existed for one warning; replaced by `WithOnError`.
 
-- [x] **CI workflow** (`.github/workflows/ci.yml`)
-  - [x] `gofmt -l` check (fail on unformatted files)
-  - [x] `go vet ./...`
-  - [x] `go test -race -shuffle=on -cover ./...`
-  - [x] `golangci-lint` with a small, explicit config (`.golangci.yml`)
-  - [x] `govulncheck ./...`
-  - [x] matrix: Go `1.27.x` and `stable`
-- [x] **Local tooling**: `Makefile` (`setup`, `check`, `test`, `ci`) and a versioned pre-commit hook in `.githooks/`
-      running gofmt, go vet, golangci-lint and go mod tidy
-- [x] **Goroutine leak detection** with `go.uber.org/goleak`
-  - [x] `goleak.VerifyTestMain(m)` in a `TestMain` for the root package
-  - [x] `defer goleak.VerifyNone(t)` in every test that exercises `WithParallel(n > 1)`
-  - [x] scenario: consumer short-circuits (`Take(1)`) after `MapCtx(WithParallel(4))` on `seq.Numbers`
-  - [x] scenario: context cancelled while a worker is blocked on the output channel
-  - [x] scenario: one worker fails while the others are still running
-  - [x] scenario: upstream source yields an error while workers are busy
-- [x] **Close coverage gaps** (statement coverage is now 100%)
-  - [x] `Stream.CircuitBreaker` — trips at threshold, resets on success, rejects threshold < 1
-        (fixed on the way: intermediate stages now forward errors instead of ending the stream, so the
-        breaker works anywhere in the chain; tolerated errors are re-emitted marked as `ErrSuppressed` and
-        skipped by terminals, observable via `Seq()` + `errors.Is(err, ErrSuppressed)`)
-  - [x] `Stream.Exec`, `Stream.Reduce`
-  - [x] error paths of `Stream.Chunk`, `Flatten`, `AllCtx`, `AnyCtx`, `ReduceCtx`
-  - [x] `WithLogger` — assert the `ReduceCtx` concurrency warning is emitted
-  - [x] `Stream.All` / `Stream.Any` on an empty stream
-- [x] **Example tests** (`example_test.go`) for `Stream`, `Stream`, `seq` — they double as godoc
-- [x] **Package docs**: `doc.go` in the root package with the overview currently only in README
+## Phase 3 — API polish (breaking, before v0.1.0)
 
-## Phase 2 — Operator set
+Goal: fix the shapes that are awkward now, while nobody depends on them, then freeze.
 
-Goal: fill in the operators a typical ETL pipeline needs.
-
-- [x] `TakeWhile`, `SkipWhile` (+ `TakeWhileCtx`, `SkipWhileCtx` on `Stream`)
-- [x] `Tap(fn func(T))` — per-element side effect that passes the element through unchanged
-      (sugar for `Map(func(x T) T { fn(x); return x })`; not to be confused with `Through`,
-      which rewires the whole pipeline). `TapCtx` on `Stream`.
-- [x] `Count()` terminal
-- [x] ~~`Distinct()`~~ — deliberately not added. A global "seen" set needs O(unique) memory and
-      belongs to the user (DB, KV store, Bloom filter), not inside the pipeline. The batched
-      pattern `Chunk(n).MapCtx(dedupAgainstStore).Through(Flatten)` is documented as
-      `ExampleStream_Chunk_deduplication`; one round trip per batch beats a per-element check
-- [x] `Compact()` / `CompactFunc(eq)` — drop *consecutive* duplicates in O(1) memory, same contract
-      and name as `slices.Compact`; precondition (sorted or grouped input) stated in the first
-      sentence of the godoc. `Compact` needs `comparable`, so top-level + `Through`; `CompactFunc`
-      as a method
-- [x] `Concat(streams ...)` / `Concat` — sequential: drains the first, then the next; deterministic order.
-      Top-level function. Name matches `slices.Concat`
-- [x] `Merge(streams ...)` on `Stream` only — concurrent fan-in, interleaved order.
-      Same variadic top-level shape as `Concat`; the single word is the only difference.
-      Decided against `MergeOrdered`/`MergeUnordered`: "ordered merge" reads as merge-sort of
-      sorted inputs, and the two operations are not symmetric (`Merge` needs goroutines, so no
-      `Stream` variant)
-- [x] channels: `New(ctx, opts...)` builder with `Seq`, `Seq2`, `Chan` replaced `NewIoStream`/`NewIoStream2`.
-      `Chan` lives on the builder rather than in `seq` because it needs the context to unblock a
-      receive; the builder also binds default options once
-- [x] `seq`: `Repeat(val, n)`, `Iterate(seed, fn)`
-
-## Phase 3 — API polish (breaking, do before tagging v0.1.0)
-
-Goal: fix the shapes that are awkward now, while nobody depends on them.
-
-- [x] rename the `*Async` family to `*Ctx`: `MapCtx`, `FilterCtx`, `TapCtx`, `TakeWhileCtx`, `SkipWhileCtx`,
-      `ForEachCtx`, `ReduceCtx`, `AllCtx`, `AnyCtx`. `Async` describes behaviour these methods do not
-      have (they block; parallelism is a separate `WithParallel` option). What actually differs is the
-      callback shape: it receives a `context.Context` and may return an error — the Go std convention
-      for that is a context suffix (`ExecContext`, `DialContext`); `Ctx` is the short form. A suffix,
-      not a prefix, so `Map` and `MapCtx` sit next to each other in godoc and completion. Mechanical
-      rename across code, tests, examples, README, doc.go, AGENTS.md. Conventions and their
-      reasons are now recorded in `CONVENTIONS.md`
-- [x] `Reduce[R](init R, fn(acc R, item T) R)` — callback order flipped to Go's conventional
-      `(acc, item)` on both stream types and the accumulator got its own type parameter. `init` stays
-      the first parameter, before the closure: an init value trailing a multi-line func literal reads badly
-- [x] recover panics inside worker goroutines and surface them as errors — done for every `Stream`
-      callback (sequential paths and terminals too, for symmetry): a panic becomes an `ErrPanic` error
-      element carrying value + stack; `CircuitBreaker` treats it like a context error (pass through, end)
-- [ ] `WithOrdered()` option for `MapCtx` / `FilterCtx` — preserve input order under `WithParallel(n > 1)`
+- [ ] `New(ctx)` without options. `New(ctx, opts...)` and `Stream.Opts(opts...)` are two ways to do
+      one thing; the source methods (`Seq`, `Seq2`, `Chan`) use no options, so nothing is lost by
+      `New(ctx).Chan(ch).Opts(WithParallel(8))`. The builder then holds only the context
+- [ ] `WithOrdered()` option for `MapCtx` / `FilterCtx` / `TapCtx` — preserve input order under
+      `WithParallel(n > 1)`
   - sliding window: `n` workers pull freely, but results are emitted strictly in source order;
     a finished item whose predecessors are still running waits in a reorder buffer
   - bounded read-ahead via `WithWindow(k)` (default `k = 2n`): at most `k` items may be pulled from
@@ -100,64 +49,62 @@ Goal: fix the shapes that are awkward now, while nobody depends on them.
   - tests: order preserved under random per-item delays; window bound respected (source pulls never
     exceed emitted + k); leak-free on short-circuit and cancellation (goleak); `Take(1)` after an
     ordered stage stops the pool
-- [x] decide the fate of `WithLogger`: removed together with `WithDiscardLogger` and the `slog`
-      dependency. Its only job was a warning that `ReduceCtx` ignores `WithParallel`; `ReduceCtx` now
-      takes no options at all. Replaced by `WithOnError(fn)` — a pipeline `Option` that terminals call
-      for every error they handle (suppressed and fatal). Options split into `Option` (pipeline) and
-      `StepOption` (one `*Ctx` call, `WithParallel`) so a misplaced option is a compile error
-- [x] ~~document (or unify) `Stream.Chunk` panicking vs `IoStream.Chunk` emitting an error~~ — moot:
-      the in-memory `Stream` was removed and `IoStream` became `Stream`. One type, one behaviour
-      (`Chunk(0)` emits an error). The old type lives on privately in `bench_test.go` as the baseline
-      for what error/context plumbing costs (~2x on pure data, same allocations)
+- [ ] API trim review before the freeze — every exported name must defend its place. Candidates:
+  - `Count()` — one-line `Reduce`
+  - `Exec()` — `ForEach` with an empty func
+  - `Compact` (top-level) next to `CompactFunc` — saves one lambda
+  - `First` / `Last` returning `(T, bool, error)` vs `(T, error)` with an `ErrEmpty` sentinel
+- [ ] document in godoc of `MapCtx`/`FilterCtx`/`TapCtx` that after a fatal error the pool may still
+      run the callback on items already buffered (up to `WithParallel(n)` of them) before it shuts down
 - [ ] tag `v0.1.0`
 
 ## Phase 4 — Measure the claims
 
-Goal: README states "O(1) memory" and "no heap allocation in intermediate ops"; prove or fix the wording.
-Runs last, against the API frozen in Phase 3, so numbers are not invalidated by signature changes.
+Goal: README claims O(1) memory in intermediate operations; prove it or fix the wording.
+Runs against the API frozen in Phase 3 so numbers are not invalidated by signature changes.
+`bench_test.go` already holds the first benchmarks plus `memStream`, the removed in-memory type, as
+the reference for pure-data overhead.
 
-- [ ] `BenchmarkStream_*` for `Map`, `Filter`, `Take`, `Skip`, `Chunk`, `Flatten` with `-benchmem`
-- [ ] `BenchmarkIoStream_*` for the sequential and the `WithParallel(n)` paths of `MapCtx` / `FilterCtx`
-- [ ] measure the per-callback `defer recover()` in `recovered` (open-coded defer; expected to be noise)
-- [ ] baseline the numbers with `benchstat` and keep the results in `BENCHMARKS.md`
-- [ ] adjust README wording to what the benchmarks show (per-stage vs per-element allocations)
+- [x] first numbers (100k ints, `Map`+`Filter`+`Collect`): plain loop 0.23 ms, `memStream` 0.70 ms,
+      `Stream` ~1.6–2.2 ms with identical allocations. The per-callback `defer recover()` cost half
+      of `Stream`'s time and was replaced by one guard per stage
+- [ ] benchmarks per operator (`Take`, `Skip`, `Chunk`, `Flatten`, `Compact`, `CircuitBreaker`) with
+      `-benchmem`; sequential vs `WithParallel(n)` for `MapCtx` / `FilterCtx`; `Merge` fan-in
+- [ ] profile the remaining gap to `memStream`: wrapper layers (`Map` → `MapCtx`, `Collect` →
+      `ForEach` → `ForEachCtx` → `each`) and `result` copying; decide whether direct implementations of
+      the hot plain variants are worth the duplication
+- [ ] run on a quiet machine with `-count=10`, summarise with `benchstat`, keep the table in
+      `BENCHMARKS.md`
+- [ ] adjust README wording to what the benchmarks show
 - [ ] optional: CI job that runs benchmarks on PRs and comments the `benchstat` diff
 
 ## Parking lot
 
-Ideas without a decision yet.
+Ideas without a decision. They enter a phase only with a concrete use case.
 
-- `Stream.Io(ctx)` shortcut instead of `New(ctx).Seq(s.Seq())`
-- `ZipWith(a, b, fn)` / `IoZipWith` — pairs elements positionally, stops at the shorter stream.
-  Backlog, no committed use case yet. Design if picked up: `ZipWith` as the only primitive (no `Zip`,
-  no `Pair` in root); `iter.Pull` on the second stream with `defer stop()`; when the second
-  stream ends first, the already-pulled element of the first is dropped (same as the std
-  `iter.Zip` proposal). Errors: pair the i-th *value* of each side, forward errors where they
-  occur; merged context. Tuples, if wanted, go to a `tuple` sub-package (`Pair`, `Triple`,
-  `MakePair`, `MakeTriple`) so `ZipWith(a, b, tuple.MakePair)` works without a root
-  dependency; no `Zip3With`, show the nested form in an example instead. Tests must include
-  goleak on short-circuit (an unstopped `iter.Pull` leaks a goroutine) and on a parallel stage
-  behind the pulled side
-- rate limiting / retry with backoff as `Stream` operators
-- ~~`iter.Seq2[K, V]`-based `KVStream`~~ — dropped: it would need both a sync and an Io variant
-  (four stream types instead of two) for a handful of key/value helpers. Same problem, smaller
-  cost: pair elements. Depends on the `tuple` sub-package decided together with `ZipWith`:
-  - `seq.Pairs(iter.Seq2[K, V]) iter.Seq[tuple.Pair[K, V]]` — adapter for any `Seq2` source
-  - `seq.KVPairs(map[K]V) iter.Seq[tuple.Pair[K, V]]` — map shortcut so callers need not import `maps`
-    (`maps.Keys` / `maps.Values` already plug straight into `New` / `New(ctx).Seq`)
-  - key/value helpers, if ever needed, as top-level functions via `Through`, never a new stream type
+- `ZipWith(a, b, fn)` — pairs elements positionally, stops at the shorter stream. Design if picked
+  up: `ZipWith` as the only primitive (no `Zip`, no `Pair` in root); `iter.Pull` on the second stream
+  with `defer stop()`; when the second stream ends first, the already-pulled element of the first is
+  dropped (same as the std `iter.Zip` proposal). Errors: pair the i-th *value* of each side, forward
+  errors where they occur; merged context. Tuples, if wanted, go to a `tuple` sub-package (`Pair`,
+  `Triple`, `MakePair`, `MakeTriple`) so `ZipWith(a, b, tuple.MakePair)` works without a root
+  dependency; no `Zip3With`, show the nested form in an example. Tests must include goleak on
+  short-circuit (an unstopped `iter.Pull` leaks a goroutine) and on a parallel stage behind the
+  pulled side
+- key/value sources, depending on the `tuple` decision above:
+  `seq.Pairs(iter.Seq2[K, V]) iter.Seq[tuple.Pair[K, V]]` for any `Seq2` source and
+  `seq.KVPairs(map[K]V)` so callers need not import `maps` (iteration order is random — say so).
+  ~~`KVStream`~~ was dropped: a dedicated type for a handful of helpers is not worth it
+- rate limiting / retry with backoff. `Retry` wraps `MapCtx` (it must re-run the upstream op), so
+  it is not an error policy
+- **error policies as plug-ins** (gut says "not yet"). `CircuitBreaker` is one instance of a stage
+  that looks only at errored elements and decides *fatal* / *tolerated* / *replaced*. The extension
+  seam already exists (errors are elements, `Seq()` / `New(ctx).Seq2` cross the boundary both ways,
+  `Through` plugs a transform in); the only missing piece would be an exported `Suppress(err) error`,
+  never the struct. Rule of three: the *second* policy does not enter as another method — at that
+  point either generalise to `OnError(policy)` + `Suppress`, or accept two concrete operators. If it
+  happens, `CircuitBreaker` moves to a neighbouring sub-package so the core stays `Stream`, the
+  builder and the terminals
+- an opt-in context-free, error-free stream type for pure in-memory work, if the ~2x overhead ever
+  matters to someone; `memStream` in `bench_test.go` is the starting point
 - fuzz tests for `Chunk` + `Flatten` round trip
-- **error policies as plug-ins** (undecided, gut says "not yet"). `CircuitBreaker` is one instance of a
-  more general thing: a stage that looks only at errored elements and decides *fatal* / *tolerated* /
-  *replaced*. Others of the same family: tolerate all, tolerate `errors.Is(err, X)`, tolerate below an
-  error rate in a window. `Retry` is not one of them (it must re-run the upstream op, so it wraps
-  `MapCtx` instead).
-  - the extension seam already exists: errors flow as elements, `Seq()` / `New(ctx).Seq2` cross the
-    boundary in both directions, `Through` plugs a transform in. The only missing piece is a way to
-    mark an error as tolerated from outside — an exported constructor such as `Suppress(err) error`,
-    never the struct or its fields
-  - rule of three: do not generalise from one case. The *second* policy does not enter as another
-    method; at that point either add `OnError(policy)` + `Suppress`, or accept two concrete operators
-  - if that happens, `CircuitBreaker` (and possibly `Flatten`/`Compact`-style top-level helpers) move
-    out of the core stream types into a neighbouring place — a `policy`/`ops` sub-package — so the core
-    stays the two stream types, the builder and the terminals

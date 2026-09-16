@@ -1,139 +1,188 @@
 # ChunkFlow
 
-**ChunkFlow** is a lazily evaluated data pipeline for Go 1.27+. It wraps native `iter.Seq` iterators in a type-safe fluent API built on generic methods, and adds what I/O-bound stream processing (ETL) needs on top: a context, errors that travel as elements, worker pools, a circuit breaker and chunking.
+Lazy, type-safe data pipelines on Go's native iterators, with what I/O-bound stream processing
+needs on top: a context, errors that travel as elements, worker pools, a circuit breaker and
+chunking. Built on Go 1.27 generic methods, so the whole pipeline reads left to right.
 
-## Architecture & Constraints
+```go
+err := chunkflow.New(ctx).Chan(userIDs).                 // any iter.Seq, iter.Seq2 or channel
+    MapCtx(fetchUser, chunkflow.WithParallel(8)).        // I/O on 8 workers
+    CircuitBreaker(5).                                   // tolerate flaky lookups, trip on 5 in a row
+    Filter(func(u User) bool { return u.Active }).
+    Chunk[[]User](500).                                  // batch for the database
+    ForEachCtx(insertBatch)                              // one INSERT per 500 users
+```
 
-* **O(1) Memory Complexity:** All intermediate transformations (except `Chunk`) are pure closures. They do not allocate heap memory and operate on the stream on the fly.
-* **Short-circuiting:** Terminal operations like `Take`, `Any`, `All`, or `First` instantly halt the consumption of the source stream, preventing wasted CPU cycles.
-* **Zero Reflection:** The package relies entirely on Go 1.27+ generics and generic methods (with necessary compiler workarounds detailed below).
-* **Requirements:** Go 1.27+ or higher (due to the strict dependency on the native `iter` package).
+## Why
 
-## Installation
+- **One type.** `Stream[T]` carries a `context.Context` and an error channel. Pure in-memory work
+  passes `context.Background()` and ignores the error it knows cannot happen.
+- **Lazy and bounded.** Every intermediate operation is a closure over the upstream iterator;
+  nothing runs until a terminal pulls, and nothing is buffered except by `Chunk` (bounded by its
+  size) and by worker pools (bounded by `WithParallel`). `Take`, `First`, `Any` and `All` stop the
+  source as soon as they can.
+- **Errors are data.** An error from a source or a callback flows down the pipeline as an element.
+  Operators pass it along and keep working on values; terminals stop at the first one. Only
+  `CircuitBreaker` tolerates errors, and it marks rather than drops them, so nothing is lost.
+- **Bugs are not data.** A panic in a callback, also on a worker goroutine, becomes an `ErrPanic`
+  error that nothing may suppress. Whether a step runs on one worker or eight makes no difference
+  to how a bug surfaces.
+- **Native iterators in and out.** Sources are `iter.Seq`, `iter.Seq2[T, error]` or channels;
+  `Seq()` gives the pipeline back as `iter.Seq2[T, error]`. Generators in `seq` are plain
+  `iter.Seq`, usable with `slices.Collect` and `range` too.
+
+Requires Go 1.27+ (generic methods, `iter`).
 
 ```bash
 go get github.com/shults/chunkflow
-
 ```
 
-## Quick Start
-
-A practical example demonstrating lazy evaluation, chunking (e.g., to prevent N+1 database query problems), and flattening the stream back to its original shape:
+## Quick start
 
 ```go
 package main
 
 import (
+    "context"
+    "errors"
     "fmt"
+
     "github.com/shults/chunkflow"
     "github.com/shults/chunkflow/seq"
 )
 
 func main() {
+    ctx := context.Background()
 
-    res := chunkflow.
-        New(seq.Numbers(1)). // 1. Wrap an infinite iterator; Skip(5) and Take(20) limit consumption to exactly 25 elements.
-        Skip(5).
-        Take(20).
-        Filter(func(i int) bool { // 2. Lazy filtering on the fly.
-            return i%2 == 0
-        }).
-        Chunk[[]int](3). // 3. Buffer elements into chunks of 3.
-        Through(chunkflow.Flatten[int]). // 4. Unwrap the chunks back into a flat stream using the architectural bridge.
-        Collect() // 5. Materialize the final result into a physical slice.
+    // Squares of the first even numbers, in batches of 3, flattened back. Numbers is infinite;
+    // Take decides how much of it is ever generated.
+    res, err := chunkflow.New(ctx).Seq(seq.Numbers(1)).
+        Filter(func(i int) bool { return i%2 == 0 }).
+        Map(func(i int) int { return i * i }).
+        Take(7).
+        Chunk[[]int](3).
+        Through(chunkflow.Flatten). // Flatten changes the element type, so it is a function
+        Collect()
+    fmt.Println(res, err) // [4 16 36 64 100 144 196] <nil>
 
-    fmt.Println(res)
+    // A fallible step. The first error ends the pipeline; values collected so far are returned.
+    parse := func(_ context.Context, s string) (int, error) {
+        var n int
+        _, err := fmt.Sscanf(s, "%d", &n)
+        return n, err
+    }
+    nums, err := chunkflow.New(ctx).Seq(seq.Items("1", "2", "x", "4")).MapCtx(parse).Collect()
+    fmt.Println(nums, err != nil) // [1 2] true
+
+    // Tolerating errors: CircuitBreaker(3) lets two failures in a row through and trips on the third.
+    // Tolerated errors are still visible through Seq() or the WithOnError hook.
+    tolerated := 0
+    nums, err = chunkflow.New(ctx, chunkflow.WithOnError(func(err error) {
+            if errors.Is(err, chunkflow.ErrSuppressed) {
+                tolerated++
+            }
+        })).
+        Seq(seq.Items("1", "x", "3", "y", "5")).
+        MapCtx(parse).
+        CircuitBreaker(3).
+        Collect()
+    fmt.Println(nums, err, tolerated) // [1 3 5] <nil> 2
 }
-
 ```
 
-## Development
+More runnable examples, one per operation, are in `*_example_test.go` and on
+[pkg.go.dev](https://pkg.go.dev/github.com/shults/chunkflow).
 
-```bash
-make setup   # installs golangci-lint and govulncheck into ./bin, enables the git pre-commit hook
-make check   # gofmt, go vet, golangci-lint, go mod tidy — what the hook runs (~0.5s warm)
-make test    # go test -race -shuffle=on
-make ci      # check + test + govulncheck, mirrors the GitHub Actions pipeline
-```
+## API
 
-The pre-commit hook lives in `.githooks/` and is enabled via `core.hooksPath`. Skip it once with `git commit --no-verify`.
+### Building a stream
 
-## API Reference
+`New` binds the context and pipeline options first; the source method picks the element type.
 
-### Constructors
-
-A `Stream[T]` is created through a small builder: `New` binds the context and default options first,
-and the source method picks the element type.
-
-| Function | Description |
+| | |
 | --- | --- |
-| `New(ctx, ...Option)` | Starts a `Stream` bound to `ctx`; options become the pipeline defaults. |
-| `New(ctx).Seq(iter.Seq[T])` | Wraps a native iterator. The context is checked before every element. |
-| `New(ctx).Seq2(iter.Seq2[T, error])` | Wraps a `(value, error)` iterator. Inverse of `Stream.Seq()`. |
-| `New(ctx).Chan(<-chan T)` | Reads a channel until it is closed or the context is cancelled. Single-use; stopping early does not close the channel. |
+| `New(ctx, ...Option)` | Starts a `Stream` bound to `ctx`. |
+| `.Seq(iter.Seq[T])` | Wraps a native iterator. The context is checked before every element. |
+| `.Seq2(iter.Seq2[T, error])` | Wraps a `(value, error)` iterator, the inverse of `Stream.Seq()`. |
+| `.Chan(<-chan T)` | Reads a channel until it is closed or the context is cancelled. Single-use; stopping early does not close or drain the channel. |
 
-### Generators (`seq` sub-package)
+Generators in `github.com/shults/chunkflow/seq` return plain `iter.Seq[T]`:
 
-Iterator generators live in `github.com/shults/chunkflow/seq`. They return plain `iter.Seq[T]`, so they work with `New(ctx).Seq`, `slices.Collect` and `range` loops alike.
-
-| Function | Description | Length |
+| | | |
 | --- | --- | --- |
-| `seq.Items(...T)` | Yields the variadic arguments. | Finite |
-| `seq.Range(from, to)` | Yields integers in the half-open interval `[from, to)`. Works for any integer type. | Finite |
-| `seq.RangeInclusive(from, to)` | Yields integers in the closed interval `[from, to]`. Safe for `to == MaxInt`. | Finite |
-| `seq.Numbers(start)` | Monotonically increasing integers starting at `start`. | **Infinite** |
-| `seq.Const(val)` | Repeatedly emits the same value. | **Infinite** |
-| `seq.Repeat(val, n)` | Emits the same value `n` times; the finite form of `Const`. | Finite |
-| `seq.Iterate(seed, fn)` | Emits `seed`, `fn(seed)`, `fn(fn(seed))`, ... Restarts from `seed` on every pass. | **Infinite** |
+| `seq.Items(...T)` | the arguments | finite |
+| `seq.Range(from, to)` | integers in `[from, to)`, any integer type | finite |
+| `seq.RangeInclusive(from, to)` | integers in `[from, to]`, safe at `MaxInt` | finite |
+| `seq.Repeat(val, n)` | `val` exactly `n` times | finite |
+| `seq.Numbers(start)` | `start`, `start+1`, ... | **infinite** |
+| `seq.Const(val)` | `val` forever | **infinite** |
+| `seq.Iterate(seed, fn)` | `seed`, `fn(seed)`, `fn(fn(seed))`, ... | **infinite** |
 
-### Intermediate Operations (Lazy Transformations)
+Anything else that yields `iter.Seq` plugs in directly: `slices.Values`, `maps.Keys`,
+`strings.Lines`, a database cursor wrapped as `iter.Seq2[Row, error]`.
 
-These modify the pipeline logic but execute absolutely no work until a terminal operation is invoked.
+### Intermediate operations
 
-| Method | Signature | Description |
+Lazy; nothing runs until a terminal pulls. Each `*Ctx` variant takes a callback that receives the
+`context.Context` and may return an error. The plain variant is the `*Ctx` one on a single worker.
+
+| Method | Signature | Notes |
 | --- | --- | --- |
-| `Map` | `Map[R](func(T) R)` | Transforms each element from type T to R. |
-| `Filter` | `Filter(func(T) bool)` | Emits only elements that satisfy the predicate. |
-| `Tap` | `Tap(func(T))` | Runs a side effect for each element and passes it through unchanged. |
-| `Take` | `Take(int)` | Limits the stream to the first N elements. |
-| `Skip` | `Skip(int)` | Bypasses the first N elements. |
-| `TakeWhile` | `TakeWhile(func(T) bool)` | Emits elements while the predicate holds, then stops pulling from the source. |
-| `SkipWhile` | `SkipWhile(func(T) bool)` | Drops elements while the predicate holds, then emits the rest without testing. |
+| `Map` / `MapCtx` | `Map[R](func(T) R)` · `MapCtx[R](func(ctx, T) (R, error), ...StepOption)` | `WithParallel(n)` runs the callback on `n` workers; order is not preserved for `n > 1`. |
+| `Filter` / `FilterCtx` | `Filter(func(T) bool)` · `FilterCtx(func(ctx, T) (bool, error), ...StepOption)` | Same concurrency semantics as `MapCtx`. |
+| `Tap` / `TapCtx` | `Tap(func(T))` · `TapCtx(func(ctx, T) error, ...StepOption)` | Side effect, element passes through; an error from `TapCtx` replaces the element. |
+| `Take` / `Skip` | `Take(n)` · `Skip(n)` | Count values, not errors. `Take` stops pulling from the source. |
+| `TakeWhile` / `SkipWhile` | `TakeWhile(func(T) bool)` · `SkipWhile(func(T) bool)`, `*Ctx` variants | Stop / start emitting at the first `false`; `SkipWhile` stops evaluating afterwards. |
 | `CompactFunc` | `CompactFunc(func(a, b T) bool)` | Drops **consecutive** duplicates in O(1) memory; input must be sorted or grouped for a global dedup. |
-| `Chunk` | `Chunk[R ~[]T](int)` | Groups elements into physical slices of the given size. |
-| `Through` | `Through[R](func(Stream) Stream)` | Pipes the stream through an external top-level function. |
+| `Chunk` | `Chunk[R []T](size)` | Groups values into slices of `size`; the last one may be shorter. Errors pass through, the partial chunk is kept. |
+| `CircuitBreaker` | `CircuitBreaker(n)` | Tolerates up to `n-1` errors in a row by re-emitting them marked `ErrSuppressed`; trips on the `n`-th. Never suppresses context errors or `ErrPanic`. |
+| `Through` | `Through[R](func(Stream[T]) Stream[R])` | Plugs a top-level function into the chain, keeping left-to-right order. |
+| `Opts` | `Opts(...Option)` | Pipeline options for everything downstream. |
 
-Context-aware, error-returning variants and concurrency:
+### Top-level functions
 
-| Method | Signature | Description |
+Operations that change the element type or need a constraint a method cannot express. Use them
+with `.Through()`.
+
+| | |
+| --- | --- |
+| `Flatten[E](Stream[[]E]) Stream[E]` | Unwraps a stream of slices. |
+| `Compact[T comparable](Stream[T])` | `CompactFunc` with `==`. |
+| `Concat(...Stream[T])` | One stream after another, deterministic; errors keep their position. |
+| `Merge(...Stream[T])` | All streams concurrently, interleaved as they arrive; cancelled by any source's context, with the original cause kept. |
+
+### Terminal operations
+
+Every terminal returns an `error`: the first non-suppressed error stops consumption and is returned,
+together with whatever was produced so far.
+
+| Method | Returns | Notes |
 | --- | --- | --- |
-| `MapCtx` | `MapCtx[R](func(ctx, T) (R, error), ...StepOption)` | Like `Map`, but may fail and run on `WithParallel(n)` workers (order not preserved for n > 1). |
-| `FilterCtx` | `FilterCtx(func(ctx, T) (bool, error), ...StepOption)` | Like `Filter`, with the same error and concurrency semantics as `MapCtx`. |
-| `TapCtx` | `TapCtx(func(ctx, T) error, ...StepOption)` | Like `Tap`; a returned error replaces the element. Same concurrency semantics as `MapCtx`. |
-| `TakeWhileCtx` / `SkipWhileCtx` | `(func(ctx, T) (bool, error))` | Context-aware predicates; always sequential. Errors in the stream pass through unevaluated. |
-| `CircuitBreaker` | `CircuitBreaker(maxConsecutiveFailures int)` | Tolerates up to `n-1` errors in a row by re-emitting them marked as `ErrSuppressed`; trips on the `n`-th. Context errors are never suppressed. |
-| `Opts` | `Opts(...Option)` | Sets pipeline options inherited by all downstream operations: `WithParallel(n)` as the default worker count, `WithOnError(fn)` as the hook terminals call for every error they handle (suppressed ones before skipping, the fatal one before returning). |
+| `Collect()` | `([]T, error)` | Everything into a slice. Do not use on infinite streams. |
+| `ForEach` / `ForEachCtx` | `error` | Side effect per element. |
+| `Reduce[R](init R, func(acc R, item T) R)` / `ReduceCtx` | `(R, error)` | Fold into an accumulator of any type, `(acc, item)` order, `init` first. Always sequential. |
+| `Count()` | `(int, error)` | |
+| `Exec()` | `error` | Drains the stream, discards values. |
+| `All` / `AllCtx` | `(bool, error)` | Short-circuits on the first mismatch. **Empty stream: `true`** (vacuous truth). |
+| `Any` / `AnyCtx` | `(bool, error)` | Short-circuits on the first match. **Empty stream: `false`.** |
+| `First()` | `(T, bool, error)` | |
+| `Last()` | `(T, bool, error)` | |
+| `Seq()` | `iter.Seq2[T, error]` | The pipeline as a native iterator, suppressed errors included; stops after the first fatal one. |
 
-`WithParallel` is a `StepOption` and may also be passed to a single `MapCtx` / `FilterCtx` / `TapCtx` call;
-`WithOnError` is pipeline-only, so passing it to a step does not compile. `ReduceCtx` takes no options: a fold is sequential.
+### Options
 
-#### Error semantics
+Two kinds, checked by the compiler:
 
-An error from the source or from a callback travels down the pipeline **as an element**. Intermediate
-operations pass it through and keep processing the remaining input (`Take`/`Skip` do not count errors,
-`Chunk` keeps its partial buffer). Terminal operations stop at the first error they see, so a pipeline
-without a `CircuitBreaker` fails fast, and the source is not consumed past the failing element.
+- `StepOption` configures one `*Ctx` call: `WithParallel(n)`. Passing it to `New` or `Opts` makes it
+  the default for the whole pipeline.
+- `Option` configures the whole pipeline only: `WithOnError(fn)` registers the hook every terminal
+  calls for each error it handles, suppressed ones just before skipping them, the fatal one just
+  before returning it. It is the place for logging and metrics.
 
-A **panic inside any callback** is recovered where it happens, also on worker goroutines, and becomes
-an error matching `ErrPanic` (the panic value and the goroutine's stack are in the message; an error
-value stays in the chain). Nothing may suppress it: `CircuitBreaker` passes it through and ends, every
-terminal returns it. Whether a step runs sequentially or on `WithParallel(n)` workers makes no
-difference to how a bug surfaces.
+Invalid values (`WithParallel(0)`, `WithOnError(nil)`) do not panic: the stream they are applied to
+emits a single error and ends.
 
-`CircuitBreaker` does not drop errors. Below its threshold it re-emits each error wrapped so that it
-matches both `ErrSuppressed` and the original error. Terminal operations
-skip such elements instead of stopping, so nothing is logged and nothing is lost: iterate `Seq()`
-and check `errors.Is(err, chunkflow.ErrSuppressed)` to observe what was tolerated.
+### Errors, in one place
 
 ```go
 for v, err := range stream.CircuitBreaker(5).Seq() {
@@ -141,57 +190,29 @@ for v, err := range stream.CircuitBreaker(5).Seq() {
     case err == nil:
         use(v)
     case errors.Is(err, chunkflow.ErrSuppressed):
-        metrics.Inc("tolerated") // original error is still in the chain: errors.Is(err, io.EOF) works
+        metrics.Inc("tolerated")  // the original error is still in the chain
+    case errors.Is(err, chunkflow.ErrPanic):
+        log.Fatal(err)            // a bug in a callback; message has the value and the stack
     default:
-        return err // fatal: breaker tripped, context cancelled, ...
+        return err                // breaker tripped, context cancelled, source failed, ...
     }
 }
 ```
 
-### Top-Level Functions
+- Operators work on **values**: `Take(3)` takes three values however many errors pass by, `Chunk`
+  never puts an error into a slice, `Compact` compares only values.
+- A pipeline without `CircuitBreaker` is fail-fast: the source is not consumed past the failing
+  element.
+- Cancelling the context always surfaces as an error, also when a worker pool exits without emitting.
 
-Operations that change the element type or need a constraint a method cannot express. Use them with `.Through()`.
+## Development
 
-| Function | Signature | Description |
-| --- | --- | --- |
-| `Flatten` | `Flatten[E](Stream[[]E])` | Unwraps a stream of slices into a flat stream of elements. |
-| `Compact` | `Compact[T comparable](Stream[T])` | `CompactFunc` with `==`. Needs `comparable`, hence top-level. |
-| `Concat` | `Concat(...Stream[T])` | Emits the streams one after another, deterministic order; errors keep their position. Name follows `slices.Concat`. |
-| `Merge` | `Merge(...Stream[T])` | Consumes all streams concurrently and interleaves elements as they arrive. |
-
-### Terminal Operations (Execution Triggers)
-
-These pull the trigger, forcing the intermediate pipeline to evaluate. Every terminal operation returns
-an `error`: the first error produced upstream (or by the callback) stops consumption and is returned.
-
-| Method | Returns | Description | Warning |
-| --- | --- | --- | --- |
-| `Collect` | `([]T, error)` | Materializes all processed elements into a slice. | OOM risk for infinite streams |
-| `Reduce[R](init R, fn(acc R, item T) R)` | `(R, error)` | Folds elements into an accumulator of any type; `fn(acc, item)` order. | Requires a finite stream |
-| `ForEach` | `error` | Executes a side effect for every element. | Blocks until completion |
-| `Exec` | `error` | Exhausts the stream, discarding values. | - |
-| `Count` | `(int, error)` | Consumes the stream and returns the number of elements. | Requires a finite stream |
-| `Any` | `(bool, error)` | Short-circuits and returns true on the first match. **Empty stream: `false`.** | - |
-| `All` | `(bool, error)` | Short-circuits and returns false on the first mismatch. **Empty stream: `true`** (vacuous truth). | - |
-| `First` | `(T, bool, error)` | Retrieves the first element and short-circuits. | - |
-| `Last` | `(T, bool, error)` | Consumes the entire stream to return the final element. | Requires a finite stream |
-| `Seq` | `iter.Seq2[T, error]` | Exposes the pipeline as a native iterator. | - |
-
-`ReduceCtx`, `AllCtx`, `AnyCtx` and `ForEachCtx` take callbacks that
-receive the `context.Context` and may return an error. `Reduce` and `ReduceCtx` are generic in the
-accumulator type `R`, so a stream of strings can fold into an `int` or a `map`.
-
-## Design Notes: Why `Flatten` requires `Through`
-
-Due to strict constraints in the Go compiler, it is impossible to apply narrower type constraints to method receivers (e.g., enforcing that `T` must be a slice `[]E` for a specific method).
-
-To prevent runtime panics caused by empty interface assertions, `Flatten` is implemented strictly as a top-level function. The `Through` method acts as a structural bridge to inject this top-level function directly into the pipeline without breaking the Fluent API chain.
-
-```go
-// Instead of breaking the chain:
-stream2 := chunkflow.Flatten(stream1.Chunk(100))
-
-// Maintain strict left-to-right flow readability:
-stream1.Chunk[[]int](100).Through(chunkflow.Flatten[int])
-
+```bash
+make setup   # installs golangci-lint and govulncheck into ./bin, enables the git pre-commit hook
+make check   # gofmt, go vet, golangci-lint, go mod tidy -diff — what the hook runs
+make test    # go test -race -shuffle=on
+make ci      # check + test + govulncheck, mirrors the GitHub Actions pipeline
 ```
+
+Design decisions and their reasons are in [CONVENTIONS.md](CONVENTIONS.md), the plan in
+[ROADMAP.md](ROADMAP.md), contributor instructions in [AGENTS.md](AGENTS.md).
