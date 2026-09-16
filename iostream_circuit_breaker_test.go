@@ -193,7 +193,7 @@ func TestIoStream_TerminalsSkipSuppressedErrors(t *testing.T) {
 	t.Run("Exec and Reduce", func(t *testing.T) {
 		require.NoError(t, tolerant(ctx).Exec())
 
-		sum, err := tolerant(ctx).Reduce(0, func(item, acc int) int { return acc + item })
+		sum, err := tolerant(ctx).Reduce(0, func(acc, item int) int { return acc + item })
 		require.NoError(t, err)
 		assert.Equal(t, 0+1+5+6+7+8+9, sum)
 	})

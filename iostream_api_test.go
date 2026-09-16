@@ -262,14 +262,14 @@ func TestIoStream_Options(t *testing.T) {
 		// ReduceCtx warns when asked for concurrency > 1
 		_, err := chunkflow.NewIo(ctx).Seq(seq.Items(1, 2)).
 			Opts(chunkflow.WithLogger(logger)).
-			ReduceCtx(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil }, chunkflow.WithParallel(2))
+			ReduceCtx(0, func(_ context.Context, acc, item int) (int, error) { return acc + item, nil }, chunkflow.WithParallel(2))
 		require.NoError(t, err)
 		assert.Contains(t, buf.String(), "level=WARN")
 
 		buf.Reset()
 		_, err = chunkflow.NewIo(ctx).Seq(seq.Items(1, 2)).
 			Opts(chunkflow.WithLogger(logger)).
-			ReduceCtx(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil },
+			ReduceCtx(0, func(_ context.Context, acc, item int) (int, error) { return acc + item, nil },
 				chunkflow.WithParallel(2), chunkflow.WithDiscardLogger())
 		require.NoError(t, err)
 		assert.Empty(t, buf.String())

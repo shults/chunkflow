@@ -154,7 +154,7 @@ func TestIoStream_CtxMethods(t *testing.T) {
 	t.Run("ReduceCtx", func(t *testing.T) {
 		sum, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
-			ReduceCtx(0, func(ctx context.Context, item, acc int) (int, error) {
+			ReduceCtx(0, func(ctx context.Context, acc, item int) (int, error) {
 				return acc + item, nil
 			})
 		require.NoError(t, err)

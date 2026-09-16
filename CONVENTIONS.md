@@ -58,6 +58,10 @@ new convention is introduced or an old one is changed; a convention without a re
   element (`Reduce`'s init value) is a positional parameter, never an option.
 - **Positional parameters before closures.** `Reduce(init, fn)`, not `Reduce(fn, init)`: a value
   trailing a multi-line func literal reads badly.
+- **Fold callbacks take `(acc, item)`**, as in `slices.Reduce` (x/exp), `lo.Reduce` and most
+  languages' `fold`; the accumulator type is a separate type parameter `R`. *Why:* the accumulator
+  is the thing being built, so it comes first, and forcing `R == T` made common folds (sum of
+  lengths, building a map) impossible without a preceding `Map`.
 
 ## Semantics worth writing down
 

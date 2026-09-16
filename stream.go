@@ -162,12 +162,16 @@ func (a Stream[T]) Through[R any](transform func(Stream[T]) Stream[R]) Stream[R]
 	return transform(a)
 }
 
-// Reduce is a terminal operation that aggregates the stream into a single value.
-func (a Stream[T]) Reduce(init T, fn func(item, acc T) T) T {
+// Reduce is a terminal operation that folds the stream into a single value: starting
+// from init, fn is called as fn(acc, item) for every element and its result becomes the
+// next accumulator. The accumulator type R is independent of the element type, so a
+// stream of strings can be reduced to an int or a map.
+func (a Stream[T]) Reduce[R any](init R, fn func(acc R, item T) R) R {
+	acc := init
 	for item := range a.seq {
-		init = fn(item, init)
+		acc = fn(acc, item)
 	}
-	return init
+	return acc
 }
 
 // Seq returns the underlying native Go iterator for integration with standard packages.

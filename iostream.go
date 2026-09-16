@@ -542,16 +542,20 @@ func (s IoStream[T]) Exec() error {
 	return s.each(func(T) (bool, error) { return true, nil })
 }
 
-// Reduce aggregates the stream into a single value.
-func (s IoStream[T]) Reduce(init T, fn func(item, acc T) T) (T, error) {
-	return s.ReduceCtx(init, func(_ context.Context, item, acc T) (T, error) {
-		return fn(item, acc), nil
+// Reduce folds the stream into a single value: starting from init, fn is called as
+// fn(acc, item) for every value and its result becomes the next accumulator. The
+// accumulator type R is independent of the element type. On error the accumulator
+// built so far is returned together with the error.
+func (s IoStream[T]) Reduce[R any](init R, fn func(acc R, item T) R) (R, error) {
+	return s.ReduceCtx(init, func(_ context.Context, acc R, item T) (R, error) {
+		return fn(acc, item), nil
 	})
 }
 
-// ReduceCtx aggregates the stream into a single value using a context-aware function.
-// Reduction is always sequential; WithParallel is accepted for API symmetry and logged.
-func (s IoStream[T]) ReduceCtx(init T, fn func(ctx context.Context, item, acc T) (T, error), opts ...Option) (T, error) {
+// ReduceCtx is Reduce with a context-aware fn that may fail; a returned error stops the
+// fold and is returned with the accumulator built so far. Reduction is always sequential;
+// WithParallel is accepted for API symmetry and logged.
+func (s IoStream[T]) ReduceCtx[R any](init R, fn func(ctx context.Context, acc R, item T) (R, error), opts ...Option) (R, error) {
 	o := s.getOptions(opts...)
 	if o.concurrency > 1 {
 		o.logger.Warn("ReduceCtx called with concurrency > 1; concurrent reduction is not supported, falling back to sequential reduction")
@@ -560,7 +564,7 @@ func (s IoStream[T]) ReduceCtx(init T, fn func(ctx context.Context, item, acc T)
 	acc := init
 	err := s.each(func(item T) (bool, error) {
 		var err error
-		acc, err = fn(s.ctx, item, acc)
+		acc, err = fn(s.ctx, acc, item)
 		return true, err
 	})
 	return acc, err

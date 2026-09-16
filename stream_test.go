@@ -148,10 +148,16 @@ func TestStream_Slicing(t *testing.T) {
 
 func TestStream_TerminalOperations(t *testing.T) {
 	t.Run("Reduce should aggregate values", func(t *testing.T) {
-		sum := chunkflow.NewStream(seq.Range(1, 5)).Reduce(0, func(item, acc int) int {
+		sum := chunkflow.NewStream(seq.Range(1, 5)).Reduce(0, func(acc, item int) int {
 			return acc + item
 		})
 		assert.Equal(t, 10, sum) // 1+2+3+4
+	})
+
+	t.Run("Reduce folds into a different accumulator type", func(t *testing.T) {
+		joined := chunkflow.NewStream(seq.Items(1, 2, 3)).
+			Reduce("", func(acc string, i int) string { return acc + strconv.Itoa(i) })
+		assert.Equal(t, "123", joined)
 	})
 
 	t.Run("Any should short-circuit true on first match", func(t *testing.T) {

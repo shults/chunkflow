@@ -74,7 +74,7 @@ func ExampleIoStream_MapCtx_parallel() {
 	// With WithParallel(n) the output order is not guaranteed, so reduce instead of collecting.
 	sum, err := chunkflow.NewIo(ctx).Seq(seq.RangeInclusive(1, 100)).
 		MapCtx(square, chunkflow.WithParallel(4)).
-		Reduce(0, func(item, acc int) int { return acc + item })
+		Reduce(0, func(acc, item int) int { return acc + item })
 
 	fmt.Println(sum, err)
 	// Output: 338350 <nil>

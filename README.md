@@ -162,7 +162,7 @@ consumption and is returned.
 | Method | `Stream` returns | `IoStream` returns | Description | Warning |
 | --- | --- | --- | --- | --- |
 | `Collect` | `[]T` | `([]T, error)` | Materializes all processed elements into a slice. | OOM risk for infinite streams |
-| `Reduce` | `T` | `(T, error)` | Aggregates elements into a single accumulated value. | Requires a finite stream |
+| `Reduce` | `Reduce[R](init R, fn(acc R, item T) R) R` | `(R, error)` | Folds elements into an accumulator of any type; `fn(acc, item)` order. | Requires a finite stream |
 | `ForEach` | - | `error` | Executes a side effect for every element. | Blocks until completion |
 | `Exec` | - | `error` | Exhausts the stream, discarding values. | - |
 | `Count` | `int` | `(int, error)` | Consumes the stream and returns the number of elements. | Requires a finite stream |
@@ -173,7 +173,8 @@ consumption and is returned.
 | `Seq` | `iter.Seq[T]` | `iter.Seq2[T, error]` | Exposes the pipeline as a native iterator. | - |
 
 `IoStream[T]` also provides `ReduceCtx`, `AllCtx`, `AnyCtx` and `ForEachCtx`, whose callbacks
-receive the `context.Context` and may return an error.
+receive the `context.Context` and may return an error. `Reduce` and `ReduceCtx` are generic in the
+accumulator type `R`, so a stream of strings can fold into an `int` or a `map`.
 
 ## Design Notes: Why `Flatten` requires `Through`
 

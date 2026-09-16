@@ -62,7 +62,7 @@ func TestIoStream_Exec(t *testing.T) {
 
 func TestIoStream_Reduce(t *testing.T) {
 	ctx := t.Context()
-	sum := func(item, acc int) int { return acc + item }
+	sum := func(acc, item int) int { return acc + item }
 
 	t.Run("aggregates all values starting from init", func(t *testing.T) {
 		total, err := chunkflow.NewIo(ctx).Seq(seq.Range(1, 5)).Reduce(100, sum)
@@ -76,14 +76,29 @@ func TestIoStream_Reduce(t *testing.T) {
 		assert.Equal(t, 42, total)
 	})
 
-	t.Run("passes item first and accumulator second", func(t *testing.T) {
+	t.Run("passes accumulator first and item second", func(t *testing.T) {
 		var order [][2]int
-		_, err := chunkflow.NewIo(ctx).Seq(seq.Items(10, 20)).Reduce(1, func(item, acc int) int {
-			order = append(order, [2]int{item, acc})
+		_, err := chunkflow.NewIo(ctx).Seq(seq.Items(10, 20)).Reduce(1, func(acc, item int) int {
+			order = append(order, [2]int{acc, item})
 			return acc + item
 		})
 		require.NoError(t, err)
-		assert.Equal(t, [][2]int{{10, 1}, {20, 11}}, order)
+		assert.Equal(t, [][2]int{{1, 10}, {11, 20}}, order)
+	})
+
+	t.Run("accumulator type is independent of the element type", func(t *testing.T) {
+		lengths, err := chunkflow.NewIo(ctx).Seq(seq.Items("go", "iter", "seq")).
+			Reduce(0, func(acc int, s string) int { return acc + len(s) })
+		require.NoError(t, err)
+		assert.Equal(t, 9, lengths)
+
+		index, err := chunkflow.NewIo(ctx).Seq(seq.Items("a", "bb", "a")).
+			Reduce(map[string]int{}, func(acc map[string]int, s string) map[string]int {
+				acc[s]++
+				return acc
+			})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]int{"a": 2, "bb": 1}, index)
 	})
 
 	t.Run("returns the partial accumulator together with an upstream error", func(t *testing.T) {
@@ -118,7 +133,7 @@ func TestIoStream_ReduceCtx(t *testing.T) {
 	t.Run("callback error is returned with the accumulator so far", func(t *testing.T) {
 		errCb := errors.New("callback")
 		total, err := chunkflow.NewIo(ctx).Seq(seq.Range(1, 10)).
-			ReduceCtx(0, func(_ context.Context, item, acc int) (int, error) {
+			ReduceCtx(0, func(_ context.Context, acc, item int) (int, error) {
 				if item == 4 {
 					return acc, errCb
 				}
@@ -132,7 +147,7 @@ func TestIoStream_ReduceCtx(t *testing.T) {
 		var buf bytes.Buffer
 		var order []int
 		total, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).
-			ReduceCtx(0, func(_ context.Context, item, acc int) (int, error) {
+			ReduceCtx(0, func(_ context.Context, acc, item int) (int, error) {
 				order = append(order, item)
 				return acc + item, nil
 			}, chunkflow.WithParallel(8), chunkflow.WithLogger(slog.New(slog.NewTextHandler(&buf, nil))))
@@ -146,7 +161,7 @@ func TestIoStream_ReduceCtx(t *testing.T) {
 		var buf bytes.Buffer
 		_, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).
 			Opts(chunkflow.WithLogger(slog.New(slog.NewTextHandler(&buf, nil)))).
-			ReduceCtx(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil })
+			ReduceCtx(0, func(_ context.Context, acc, item int) (int, error) { return acc + item, nil })
 		require.NoError(t, err)
 		assert.Empty(t, buf.String())
 	})

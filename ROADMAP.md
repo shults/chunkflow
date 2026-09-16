@@ -77,9 +77,9 @@ Goal: fix the shapes that are awkward now, while nobody depends on them.
       not a prefix, so `Map` and `MapCtx` sit next to each other in godoc and completion. Mechanical
       rename across code, tests, examples, README, doc.go, AGENTS.md. Conventions and their
       reasons are now recorded in `CONVENTIONS.md`
-- [ ] `Reduce(init, fn(acc, item))` — flip the *callback* argument order to Go's conventional
-      `(acc, item)` on both stream types. `init` stays the first parameter, before the closure:
-      an init value trailing a multi-line func literal reads badly
+- [x] `Reduce[R](init R, fn(acc R, item T) R)` — callback order flipped to Go's conventional
+      `(acc, item)` on both stream types and the accumulator got its own type parameter. `init` stays
+      the first parameter, before the closure: an init value trailing a multi-line func literal reads badly
 - [ ] recover panics inside worker goroutines and surface them as errors (a panic in a worker currently kills the process)
 - [ ] `WithOrdered()` option for `MapCtx` / `FilterCtx` — preserve input order under `WithParallel(n > 1)`
   - sliding window: `n` workers pull freely, but results are emitted strictly in source order;

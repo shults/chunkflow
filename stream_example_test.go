@@ -40,7 +40,7 @@ func ExampleStream_Tap() {
 	// Tap is for side effects; the stream itself is untouched.
 	total := chunkflow.NewStream(seq.Range(1, 4)).
 		Tap(func(i int) { fmt.Println("seen", i) }).
-		Reduce(0, func(item, acc int) int { return acc + item })
+		Reduce(0, func(acc, item int) int { return acc + item })
 
 	fmt.Println("total", total)
 	// Output:
@@ -105,10 +105,19 @@ func ExampleFlatten() {
 
 func ExampleStream_Reduce() {
 	sum := chunkflow.NewStream(seq.RangeInclusive(1, 10)).
-		Reduce(0, func(item, acc int) int { return acc + item })
+		Reduce(0, func(acc, item int) int { return acc + item })
 
-	fmt.Println(sum)
-	// Output: 55
+	// The accumulator may have a different type than the elements.
+	csv := chunkflow.NewStream(seq.Items(1, 2, 3)).
+		Reduce("", func(acc string, item int) string {
+			if acc != "" {
+				acc += ","
+			}
+			return acc + fmt.Sprint(item)
+		})
+
+	fmt.Println(sum, csv)
+	// Output: 55 1,2,3
 }
 
 func ExampleStream_All() {
