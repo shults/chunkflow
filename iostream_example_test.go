@@ -280,3 +280,21 @@ func ExampleIoMerge() {
 	fmt.Println(n, err)
 	// Output: 100 <nil>
 }
+
+func ExampleErrPanic() {
+	ctx := context.Background()
+
+	var cfg map[string]int // nil map: writing to it panics
+	got, err := chunkflow.NewIo(ctx).Seq(seq.Items("a", "b", "c")).
+		MapCtx(func(_ context.Context, k string) (int, error) {
+			if k == "b" {
+				cfg[k] = 1 // bug
+			}
+			return len(k), nil
+		}, chunkflow.WithParallel(2)).
+		Collect()
+
+	// The worker's panic did not crash the process; it came back as an error.
+	fmt.Println(len(got) < 3, errors.Is(err, chunkflow.ErrPanic))
+	// Output: true true
+}

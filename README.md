@@ -126,6 +126,12 @@ operations pass it through and keep processing the remaining input (`Take`/`Skip
 `Chunk` keeps its partial buffer). Terminal operations stop at the first error they see, so a pipeline
 without a `CircuitBreaker` fails fast, and the source is not consumed past the failing element.
 
+A **panic inside any callback** is recovered where it happens, also on worker goroutines, and becomes
+an error matching `ErrPanic` (the panic value and the goroutine's stack are in the message; an error
+value stays in the chain). Nothing may suppress it: `CircuitBreaker` passes it through and ends, every
+terminal returns it. Whether a step runs sequentially or on `WithParallel(n)` workers makes no
+difference to how a bug surfaces.
+
 `CircuitBreaker` does not drop errors. Below its threshold it re-emits each error wrapped so that it
 matches both `ErrSuppressed` and the original error. Terminal operations
 skip such elements instead of stopping, so nothing is logged and nothing is lost: iterate `Seq()`

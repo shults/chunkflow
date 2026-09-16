@@ -80,7 +80,9 @@ Goal: fix the shapes that are awkward now, while nobody depends on them.
 - [x] `Reduce[R](init R, fn(acc R, item T) R)` — callback order flipped to Go's conventional
       `(acc, item)` on both stream types and the accumulator got its own type parameter. `init` stays
       the first parameter, before the closure: an init value trailing a multi-line func literal reads badly
-- [ ] recover panics inside worker goroutines and surface them as errors (a panic in a worker currently kills the process)
+- [x] recover panics inside worker goroutines and surface them as errors — done for every `IoStream`
+      callback (sequential paths and terminals too, for symmetry): a panic becomes an `ErrPanic` error
+      element carrying value + stack; `CircuitBreaker` treats it like a context error (pass through, end)
 - [ ] `WithOrdered()` option for `MapCtx` / `FilterCtx` — preserve input order under `WithParallel(n > 1)`
   - sliding window: `n` workers pull freely, but results are emitted strictly in source order;
     a finished item whose predecessors are still running waits in a reorder buffer
@@ -113,6 +115,7 @@ Runs last, against the API frozen in Phase 3, so numbers are not invalidated by 
 
 - [ ] `BenchmarkStream_*` for `Map`, `Filter`, `Take`, `Skip`, `Chunk`, `Flatten` with `-benchmem`
 - [ ] `BenchmarkIoStream_*` for the sequential and the `WithParallel(n)` paths of `MapCtx` / `FilterCtx`
+- [ ] measure the per-callback `defer recover()` in `recovered` (open-coded defer; expected to be noise)
 - [ ] baseline the numbers with `benchstat` and keep the results in `BENCHMARKS.md`
 - [ ] adjust README wording to what the benchmarks show (per-stage vs per-element allocations)
 - [ ] optional: CI job that runs benchmarks on PRs and comments the `benchstat` diff

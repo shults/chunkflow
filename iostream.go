@@ -19,6 +19,11 @@ import (
 // errors. CircuitBreaker may mark an error as tolerated (see ErrSuppressed). Terminal
 // operations skip elements whose error matches ErrSuppressed and stop at the first
 // other error, so a pipeline without a CircuitBreaker behaves as "fail fast".
+//
+// A panic inside any user callback is recovered where it happens, also on worker
+// goroutines, and becomes an error matching ErrPanic that no operator may suppress.
+// Whether a step runs sequentially or on WithParallel(n) workers therefore makes no
+// difference to how a bug surfaces: the terminal returns it.
 type IoStream[T any] struct {
 	options options
 	ctx     context.Context
@@ -183,7 +188,7 @@ func (s IoStream[T]) MapCtx[R any](mapFn func(ctx context.Context, item T) (R, e
 				}
 				continue
 			}
-			val, err := mapFn(s.ctx, item.value)
+			val, err := recovered(func() (R, error) { return mapFn(s.ctx, item.value) })
 			if !yield(result[R]{value: val, err: err}) {
 				return
 			}
@@ -235,7 +240,7 @@ func (s IoStream[T]) FilterCtx(predicate func(ctx context.Context, item T) (bool
 					}
 					continue
 				}
-				match, err := predicate(s.ctx, item.value)
+				match, err := recovered(func() (bool, error) { return predicate(s.ctx, item.value) })
 				if err != nil {
 					if !yield(result[T]{err: err}) {
 						return
@@ -344,7 +349,7 @@ func (s IoStream[T]) TakeWhileCtx(predicate func(ctx context.Context, item T) (b
 				}
 				continue
 			}
-			ok, err := predicate(s.ctx, item.value)
+			ok, err := recovered(func() (bool, error) { return predicate(s.ctx, item.value) })
 			if err != nil {
 				if !yield(result[T]{err: err}) {
 					return
@@ -381,7 +386,7 @@ func (s IoStream[T]) SkipWhileCtx(predicate func(ctx context.Context, item T) (b
 				continue
 			}
 			if skipping {
-				skip, err := predicate(s.ctx, item.value)
+				skip, err := recovered(func() (bool, error) { return predicate(s.ctx, item.value) })
 				if err != nil {
 					if !yield(result[T]{err: err}) {
 						return
@@ -410,10 +415,16 @@ func (s IoStream[T]) CompactFunc(eq func(a, b T) bool) IoStream[T] {
 		var last T
 		first := true
 		for item := range s.seq {
-			if item.err == nil {
-				if !first && eq(last, item.value) {
+			if item.err == nil && !first {
+				same, err := recovered(func() (bool, error) { return eq(last, item.value), nil })
+				switch {
+				case err != nil:
+					item = result[T]{err: err} // the panic takes the element's place
+				case same:
 					continue
 				}
+			}
+			if item.err == nil {
 				first = false
 				last = item.value
 			}
@@ -471,7 +482,8 @@ func (s IoStream[T]) Through[R any](transform func(IoStream[T]) IoStream[R]) IoS
 // ErrSuppressed so that downstream terminal operations skip them while consumers of
 // Seq() can still observe them. Errors already marked as suppressed by an upstream
 // breaker pass through without affecting the counter. Context errors (context.Canceled,
-// context.DeadlineExceeded) are never suppressed.
+// context.DeadlineExceeded) and recovered panics (ErrPanic) are never suppressed: they
+// pass through and end the stream.
 //
 // After a parallel stage the notion of "consecutive" follows arrival order, not source order.
 func (s IoStream[T]) CircuitBreaker(maxConsecutiveFailures int) IoStream[T] {
@@ -487,7 +499,8 @@ func (s IoStream[T]) CircuitBreaker(maxConsecutiveFailures int) IoStream[T] {
 				consecutiveFailures = 0
 			case isSuppressed(item.err):
 				// already handled by an upstream breaker; not ours to count
-			case errors.Is(item.err, context.Canceled) || errors.Is(item.err, context.DeadlineExceeded):
+			case isPanic(item.err), errors.Is(item.err, context.Canceled), errors.Is(item.err, context.DeadlineExceeded):
+				// bugs and cancellations are never tolerated: pass through and end
 				yield(item)
 				return
 			default:
@@ -870,7 +883,7 @@ func (s IoStream[T]) each(fn func(T) (bool, error)) error {
 			}
 			return item.err
 		}
-		next, err := fn(item.value)
+		next, err := recovered(func() (bool, error) { return fn(item.value) })
 		if err != nil {
 			s.options.onError(err)
 			return err
@@ -942,7 +955,7 @@ func (s IoStream[T]) mapCtxConcurrent[R any](mapFn func(ctx context.Context, ite
 						if !ok {
 							return
 						}
-						res, err := mapFn(ctx, val)
+						res, err := recovered(func() (R, error) { return mapFn(ctx, val) })
 						select {
 						case outChan <- result[R]{value: res, err: err}:
 						case <-ctx.Done():

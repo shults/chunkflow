@@ -40,6 +40,12 @@ new convention is introduced or an old one is changed; a convention without a re
   error that is not marked `ErrSuppressed`. Only `CircuitBreaker` marks errors as tolerated; it never
   drops or logs them, so `Seq()` shows everything. *Why:* silent data loss is the worst failure mode
   of a pipeline; observability stays with the consumer.
+- **Panics in `IoStream` callbacks become `ErrPanic` errors, never re-panics.** Recovered at the
+  call site (also inside workers), pushed downstream in position, never suppressed by
+  `CircuitBreaker`, returned by every terminal. *Why:* `recover` only works on the panicking
+  goroutine, so a worker panic can only be reported as data; doing the same on the sequential path
+  keeps `WithParallel(1)` and `WithParallel(8)` — and `Seq()` consumers — behaving identically. `Stream`
+  has no error channel, so its callbacks still panic.
 - **Type-changing operations are top-level functions used via `Through`.** A method cannot add a
   constraint on the receiver's type parameter (`Flatten` needs `Stream[[]E]`, `Compact` needs
   `comparable`). `Through` keeps the left-to-right reading order.

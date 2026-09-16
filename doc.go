@@ -54,6 +54,10 @@
 // and consumers of Seq can still observe them. On the n-th consecutive error the
 // breaker trips with a fatal error. Context errors are never suppressed.
 //
+// A panic inside a callback is recovered where it happens, also on worker goroutines,
+// and becomes an error matching ErrPanic that nothing may suppress. A bug therefore
+// surfaces the same way whether the step runs sequentially or on WithParallel(n) workers.
+//
 // # Short-circuiting and cancellation
 //
 // Every operation honours the yield protocol: when a consumer stops (Take, First,
