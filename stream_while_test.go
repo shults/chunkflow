@@ -11,13 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIoStream_TakeWhile(t *testing.T) {
+func TestStream_TakeWhile(t *testing.T) {
 	ctx := t.Context()
 	lt4 := func(i int) bool { return i < 4 }
 
 	t.Run("stops at the first mismatch and stops pulling", func(t *testing.T) {
 		pulled := 0
-		res, err := chunkflow.NewIo(ctx).Seq(seq.Items(1, 2, 3, 10, 4, 5)).
+		res, err := chunkflow.New(ctx).Seq(seq.Items(1, 2, 3, 10, 4, 5)).
 			Tap(func(int) { pulled++ }).
 			TakeWhile(lt4).
 			Collect()
@@ -28,7 +28,7 @@ func TestIoStream_TakeWhile(t *testing.T) {
 
 	t.Run("errors pass through without being evaluated", func(t *testing.T) {
 		// 0..9 with 2,3,4 failing; predicate i < 6 must only see values
-		res, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).
+		res, err := chunkflow.New(ctx).Seq(seq.Range(0, 10)).
 			MapCtx(failing).
 			TakeWhile(func(i int) bool { return i < 6 }).
 			CircuitBreaker(100).
@@ -46,14 +46,14 @@ func TestIoStream_TakeWhile(t *testing.T) {
 			}
 			yield(0, errBoom) // never reached: TakeWhile stops on 3
 		}
-		res, err := chunkflow.NewIo(ctx).Seq2(src).TakeWhile(func(i int) bool { return i < 3 }).Collect()
+		res, err := chunkflow.New(ctx).Seq2(src).TakeWhile(func(i int) bool { return i < 3 }).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{1, 2}, res)
 	})
 
 	t.Run("Ctx predicate error is fatal without a breaker", func(t *testing.T) {
 		errPred := errors.New("predicate")
-		res, err := chunkflow.NewIo(ctx).Seq(seq.Numbers(0)).
+		res, err := chunkflow.New(ctx).Seq(seq.Numbers(0)).
 			TakeWhileCtx(func(_ context.Context, i int) (bool, error) {
 				if i == 2 {
 					return false, errPred
@@ -67,7 +67,7 @@ func TestIoStream_TakeWhile(t *testing.T) {
 
 	t.Run("Ctx predicate error is emitted and evaluation continues", func(t *testing.T) {
 		errPred := errors.New("predicate")
-		res, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).
+		res, err := chunkflow.New(ctx).Seq(seq.Range(0, 10)).
 			TakeWhileCtx(func(_ context.Context, i int) (bool, error) {
 				if i == 2 {
 					return false, errPred // must not end the stream on its own
@@ -83,7 +83,7 @@ func TestIoStream_TakeWhile(t *testing.T) {
 	t.Run("Ctx predicate receives the stream context", func(t *testing.T) {
 		type key struct{}
 		cctx := context.WithValue(ctx, key{}, true)
-		res, err := chunkflow.NewIo(cctx).Seq(seq.Range(0, 3)).
+		res, err := chunkflow.New(cctx).Seq(seq.Range(0, 3)).
 			TakeWhileCtx(func(ctx context.Context, _ int) (bool, error) {
 				v, _ := ctx.Value(key{}).(bool)
 				return v, nil
@@ -94,13 +94,13 @@ func TestIoStream_TakeWhile(t *testing.T) {
 	})
 }
 
-func TestIoStream_SkipWhile(t *testing.T) {
+func TestStream_SkipWhile(t *testing.T) {
 	ctx := t.Context()
 	lt4 := func(i int) bool { return i < 4 }
 
 	t.Run("drops the prefix and then stops evaluating", func(t *testing.T) {
 		evaluated := 0
-		res, err := chunkflow.NewIo(ctx).Seq(seq.Items(1, 2, 3, 10, 4, 5)).
+		res, err := chunkflow.New(ctx).Seq(seq.Items(1, 2, 3, 10, 4, 5)).
 			SkipWhile(func(i int) bool { evaluated++; return lt4(i) }).
 			Collect()
 		require.NoError(t, err)
@@ -112,7 +112,7 @@ func TestIoStream_SkipWhile(t *testing.T) {
 		// 0..9 with 2,3,4 failing; skip while i < 6 -> errors at 2,3,4 are emitted during skipping
 		var suppressed int
 		var values []int
-		for v, err := range chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).
+		for v, err := range chunkflow.New(ctx).Seq(seq.Range(0, 10)).
 			MapCtx(failing).
 			SkipWhile(func(i int) bool { return i < 6 }).
 			CircuitBreaker(100).
@@ -130,7 +130,7 @@ func TestIoStream_SkipWhile(t *testing.T) {
 
 	t.Run("Ctx predicate error is emitted and skipping continues", func(t *testing.T) {
 		errPred := errors.New("predicate")
-		res, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 8)).
+		res, err := chunkflow.New(ctx).Seq(seq.Range(0, 8)).
 			SkipWhileCtx(func(_ context.Context, i int) (bool, error) {
 				if i == 1 {
 					return false, errPred
@@ -145,7 +145,7 @@ func TestIoStream_SkipWhile(t *testing.T) {
 
 	t.Run("stops pulling once the consumer is done", func(t *testing.T) {
 		pulled := 0
-		v, ok, err := chunkflow.NewIo(ctx).Seq(seq.Numbers(0)).
+		v, ok, err := chunkflow.New(ctx).Seq(seq.Numbers(0)).
 			Tap(func(int) { pulled++ }).
 			SkipWhile(lt4).
 			First()
@@ -157,7 +157,7 @@ func TestIoStream_SkipWhile(t *testing.T) {
 
 	t.Run("Ctx predicate error is fatal without a breaker", func(t *testing.T) {
 		errPred := errors.New("predicate")
-		_, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 8)).
+		_, err := chunkflow.New(ctx).Seq(seq.Range(0, 8)).
 			SkipWhileCtx(func(context.Context, int) (bool, error) { return false, errPred }).
 			Collect()
 		require.ErrorIs(t, err, errPred)

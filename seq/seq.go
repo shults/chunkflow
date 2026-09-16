@@ -1,5 +1,5 @@
 // Package seq provides generators of native Go iterators (iter.Seq) that can be
-// fed into chunkflow.NewStream or chunkflow.NewIo(ctx).Seq, or used directly in
+// fed into chunkflow.New(ctx).Seq, or used directly in
 // range-over-func loops.
 package seq
 

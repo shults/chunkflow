@@ -21,13 +21,13 @@ func failing(_ context.Context, i int) (int, error) {
 	return i, nil
 }
 
-func TestIoStream_CircuitBreaker(t *testing.T) {
+func TestStream_CircuitBreaker(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("tolerates errors below the threshold and keeps processing the source", func(t *testing.T) {
 		var mapped []int
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Range(0, 10)).
+			New(ctx).Seq(seq.Range(0, 10)).
 			MapCtx(func(ctx context.Context, i int) (int, error) {
 				mapped = append(mapped, i)
 				return failing(ctx, i)
@@ -42,7 +42,7 @@ func TestIoStream_CircuitBreaker(t *testing.T) {
 
 	t.Run("trips when consecutive failures reach the threshold", func(t *testing.T) {
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Range(0, 10)).
+			New(ctx).Seq(seq.Range(0, 10)).
 			MapCtx(failing).
 			CircuitBreaker(3).
 			Collect()
@@ -56,7 +56,7 @@ func TestIoStream_CircuitBreaker(t *testing.T) {
 	t.Run("a success resets the failure counter", func(t *testing.T) {
 		// errors on odd items: never two in a row, so threshold 2 must never trip
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Range(0, 8)).
+			New(ctx).Seq(seq.Range(0, 8)).
 			MapCtx(func(_ context.Context, i int) (int, error) {
 				if i%2 == 1 {
 					return 0, errBoom
@@ -71,7 +71,7 @@ func TestIoStream_CircuitBreaker(t *testing.T) {
 	})
 
 	t.Run("threshold below 1 is an error", func(t *testing.T) {
-		_, err := chunkflow.NewIo(ctx).Seq(seq.Items(1)).CircuitBreaker(0).Collect()
+		_, err := chunkflow.New(ctx).Seq(seq.Items(1)).CircuitBreaker(0).Collect()
 		require.ErrorContains(t, err, "threshold must be >= 1")
 	})
 
@@ -79,7 +79,7 @@ func TestIoStream_CircuitBreaker(t *testing.T) {
 		var values []int
 		var suppressed []error
 
-		for v, err := range chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).MapCtx(failing).CircuitBreaker(5).Seq() {
+		for v, err := range chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(failing).CircuitBreaker(5).Seq() {
 			if err == nil {
 				values = append(values, v)
 				continue
@@ -97,7 +97,7 @@ func TestIoStream_CircuitBreaker(t *testing.T) {
 
 	t.Run("Seq stops after a fatal error but not after a suppressed one", func(t *testing.T) {
 		var errs []error
-		for _, err := range chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).MapCtx(failing).CircuitBreaker(3).Seq() {
+		for _, err := range chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(failing).CircuitBreaker(3).Seq() {
 			if err != nil {
 				errs = append(errs, err)
 			}
@@ -113,7 +113,7 @@ func TestIoStream_CircuitBreaker(t *testing.T) {
 		// inner breaker tolerates everything; outer one with threshold 1 would trip on
 		// any live error, so it must see only suppressed ones.
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Range(0, 10)).
+			New(ctx).Seq(seq.Range(0, 10)).
 			MapCtx(failing).
 			CircuitBreaker(100).
 			CircuitBreaker(1).
@@ -128,7 +128,7 @@ func TestIoStream_CircuitBreaker(t *testing.T) {
 		cancel()
 
 		_, err := chunkflow.
-			NewIo(cctx).Seq(seq.Numbers(0)).
+			New(cctx).Seq(seq.Numbers(0)).
 			CircuitBreaker(1000).
 			Take(3).
 			Collect()
@@ -139,7 +139,7 @@ func TestIoStream_CircuitBreaker(t *testing.T) {
 
 	t.Run("works after a parallel stage", func(t *testing.T) {
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Range(0, 100)).
+			New(ctx).Seq(seq.Range(0, 100)).
 			MapCtx(func(_ context.Context, i int) (int, error) {
 				if i%10 == 0 {
 					return 0, errBoom
@@ -165,7 +165,7 @@ func TestIoStream_CircuitBreaker(t *testing.T) {
 				}
 			}
 		}
-		res, err := chunkflow.NewIo(ctx).Seq2(src).CircuitBreaker(2).Collect()
+		res, err := chunkflow.New(ctx).Seq2(src).CircuitBreaker(2).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 2, 4, 5}, res)
 	})
@@ -173,11 +173,11 @@ func TestIoStream_CircuitBreaker(t *testing.T) {
 
 // tolerant is 0..9 with 2,3,4 failing and a breaker that never trips, so the
 // suppressed errors reach whatever comes next.
-func tolerant(ctx context.Context) chunkflow.IoStream[int] {
-	return chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).MapCtx(failing).CircuitBreaker(100)
+func tolerant(ctx context.Context) chunkflow.Stream[int] {
+	return chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(failing).CircuitBreaker(100)
 }
 
-func TestIoStream_TerminalsSkipSuppressedErrors(t *testing.T) {
+func TestStream_TerminalsSkipSuppressedErrors(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("ForEach and Count", func(t *testing.T) {
@@ -214,7 +214,7 @@ func TestIoStream_TerminalsSkipSuppressedErrors(t *testing.T) {
 
 	t.Run("First and Last", func(t *testing.T) {
 		// make the very first items fail so First has to skip suppressed errors
-		s := chunkflow.NewIo(ctx).Seq(seq.Range(2, 10)).MapCtx(failing).CircuitBreaker(100)
+		s := chunkflow.New(ctx).Seq(seq.Range(2, 10)).MapCtx(failing).CircuitBreaker(100)
 
 		first, ok, err := s.First()
 		require.NoError(t, err)
@@ -239,13 +239,13 @@ func TestIoStream_TerminalsSkipSuppressedErrors(t *testing.T) {
 	})
 }
 
-func TestIoStream_ErrorsFlowThroughIntermediateStages(t *testing.T) {
+func TestStream_ErrorsFlowThroughIntermediateStages(t *testing.T) {
 	ctx := t.Context()
 
-	source := func() chunkflow.IoStream[int] {
-		return chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).MapCtx(failing)
+	source := func() chunkflow.Stream[int] {
+		return chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(failing)
 	}
-	swallow := func(s chunkflow.IoStream[int]) chunkflow.IoStream[int] {
+	swallow := func(s chunkflow.Stream[int]) chunkflow.Stream[int] {
 		return s.CircuitBreaker(100)
 	}
 
@@ -277,14 +277,14 @@ func TestIoStream_ErrorsFlowThroughIntermediateStages(t *testing.T) {
 		assert.Equal(t, [][]int{{0, 1, 5}, {6, 7, 8}, {9}}, res)
 	})
 
-	t.Run("IoFlatten passes errors through", func(t *testing.T) {
-		res, err := source().Chunk[[]int](2).Through(chunkflow.IoFlatten).Through(swallow).Collect()
+	t.Run("Flatten passes errors through", func(t *testing.T) {
+		res, err := source().Chunk[[]int](2).Through(chunkflow.Flatten).Through(swallow).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 1, 5, 6, 7, 8, 9}, res)
 	})
 
-	t.Run("suppressed errors survive a round trip through Seq and NewIo().Seq2", func(t *testing.T) {
-		res, err := chunkflow.NewIo(ctx).Seq2(tolerant(ctx).Seq()).Collect()
+	t.Run("suppressed errors survive a round trip through Seq and New().Seq2", func(t *testing.T) {
+		res, err := chunkflow.New(ctx).Seq2(tolerant(ctx).Seq()).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 1, 5, 6, 7, 8, 9}, res)
 	})
@@ -292,7 +292,7 @@ func TestIoStream_ErrorsFlowThroughIntermediateStages(t *testing.T) {
 	t.Run("without a breaker terminals still fail fast", func(t *testing.T) {
 		var mapped int
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Range(0, 10)).
+			New(ctx).Seq(seq.Range(0, 10)).
 			MapCtx(func(ctx context.Context, i int) (int, error) {
 				mapped++
 				return failing(ctx, i)

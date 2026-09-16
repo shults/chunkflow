@@ -13,29 +13,29 @@ import (
 	"go.uber.org/goleak"
 )
 
-func TestIoStream_Concat(t *testing.T) {
+func TestStream_Concat(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("emits streams one after another", func(t *testing.T) {
-		res, err := chunkflow.IoConcat(
-			chunkflow.NewIo(ctx).Seq(seq.Items(1, 2)),
-			chunkflow.NewIo(ctx).Seq(seq.Items[int]()),
-			chunkflow.NewIo(ctx).Seq(seq.Items(3)),
+		res, err := chunkflow.Concat(
+			chunkflow.New(ctx).Seq(seq.Items(1, 2)),
+			chunkflow.New(ctx).Seq(seq.Items[int]()),
+			chunkflow.New(ctx).Seq(seq.Items(3)),
 		).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{1, 2, 3}, res)
 	})
 
 	t.Run("with no arguments is empty", func(t *testing.T) {
-		res, err := chunkflow.IoConcat[int]().Collect()
+		res, err := chunkflow.Concat[int]().Collect()
 		require.NoError(t, err)
 		assert.Empty(t, res)
 	})
 
 	t.Run("errors keep their position and pass through", func(t *testing.T) {
-		res, err := chunkflow.IoConcat(
-			chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).MapCtx(failing), // 2,3,4 fail
-			chunkflow.NewIo(ctx).Seq(seq.Items(9)),
+		res, err := chunkflow.Concat(
+			chunkflow.New(ctx).Seq(seq.Range(0, 5)).MapCtx(failing), // 2,3,4 fail
+			chunkflow.New(ctx).Seq(seq.Items(9)),
 		).CircuitBreaker(100).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 1, 9}, res)
@@ -43,8 +43,8 @@ func TestIoStream_Concat(t *testing.T) {
 
 	t.Run("is fail-fast without a breaker and does not touch later streams", func(t *testing.T) {
 		secondPulled := 0
-		second := chunkflow.NewIo(ctx).Seq(seq.Items(9)).Tap(func(int) { secondPulled++ })
-		res, err := chunkflow.IoConcat(chunkflow.NewIo(ctx).Seq2(errAfter(2, errBoom)), second).Collect()
+		second := chunkflow.New(ctx).Seq(seq.Items(9)).Tap(func(int) { secondPulled++ })
+		res, err := chunkflow.Concat(chunkflow.New(ctx).Seq2(errAfter(2, errBoom)), second).Collect()
 		require.ErrorIs(t, err, errBoom)
 		assert.Equal(t, []int{0, 1}, res)
 		assert.Equal(t, 0, secondPulled)
@@ -55,15 +55,15 @@ func TestIoStream_Concat(t *testing.T) {
 		cancel() // the SECOND stream's context, not the head's
 
 		// The downstream MapCtx runs on the concat's context, so it must observe the cancel.
-		_, err := chunkflow.IoConcat(
-			chunkflow.NewIo(ctx).Seq(seq.Items(1)),
-			chunkflow.NewIo(otherCtx).Seq(seq.Items(2)),
+		_, err := chunkflow.Concat(
+			chunkflow.New(ctx).Seq(seq.Items(1)),
+			chunkflow.New(otherCtx).Seq(seq.Items(2)),
 		).MapCtx(func(ctx context.Context, i int) (int, error) { return i, ctx.Err() }).Collect()
 		require.ErrorIs(t, err, context.Canceled)
 	})
 }
 
-func TestIoStream_MergeContexts(t *testing.T) {
+func TestStream_MergeContexts(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("cancelling a non-head source context stops the merge and releases sources", func(t *testing.T) {
@@ -72,9 +72,9 @@ func TestIoStream_MergeContexts(t *testing.T) {
 		var seen atomic.Int32
 		done := make(chan error, 1)
 		go func() {
-			done <- chunkflow.IoMerge(
-				chunkflow.NewIo(ctx).Seq(seq.Numbers(0)),      // head: never cancelled
-				chunkflow.NewIo(otherCtx).Seq(seq.Numbers(0)), // cancelled below
+			done <- chunkflow.Merge(
+				chunkflow.New(ctx).Seq(seq.Numbers(0)),      // head: never cancelled
+				chunkflow.New(otherCtx).Seq(seq.Numbers(0)), // cancelled below
 			).Tap(func(int) { seen.Add(1) }).Exec()
 		}()
 		require.Eventually(t, func() bool { return seen.Load() > 10 }, 2*time.Second, time.Millisecond)
@@ -94,10 +94,10 @@ func TestIoStream_MergeContexts(t *testing.T) {
 		ctx3, cancel3 := context.WithCancel(ctx)
 		cancel3() // the third one
 
-		err := chunkflow.IoMerge(
-			chunkflow.NewIo(ctx).Seq(seq.Numbers(0)),
-			chunkflow.NewIo(ctx2).Seq(seq.Numbers(0)),
-			chunkflow.NewIo(ctx3).Seq(seq.Numbers(0)),
+		err := chunkflow.Merge(
+			chunkflow.New(ctx).Seq(seq.Numbers(0)),
+			chunkflow.New(ctx2).Seq(seq.Numbers(0)),
+			chunkflow.New(ctx3).Seq(seq.Numbers(0)),
 		).Exec()
 		require.ErrorIs(t, err, context.Canceled)
 	})
@@ -107,9 +107,9 @@ func TestIoStream_MergeContexts(t *testing.T) {
 		deadlineCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
 		defer cancel()
 
-		err := chunkflow.IoMerge(
-			chunkflow.NewIo(ctx).Seq(seq.Numbers(0)),
-			chunkflow.NewIo(deadlineCtx).Seq(seq.Numbers(0)),
+		err := chunkflow.Merge(
+			chunkflow.New(ctx).Seq(seq.Numbers(0)),
+			chunkflow.New(deadlineCtx).Seq(seq.Numbers(0)),
 		).Exec()
 		require.ErrorIs(t, err, context.DeadlineExceeded, "must not be flattened into Canceled")
 	})
@@ -120,9 +120,9 @@ func TestIoStream_MergeContexts(t *testing.T) {
 		otherCtx := context.WithValue(ctx, key{}, "other")
 
 		var fromCtx []string
-		err := chunkflow.IoMerge(
-			chunkflow.NewIo(headCtx).Seq(seq.Items(1)),
-			chunkflow.NewIo(otherCtx).Seq(seq.Items(2)),
+		err := chunkflow.Merge(
+			chunkflow.New(headCtx).Seq(seq.Items(1)),
+			chunkflow.New(otherCtx).Seq(seq.Items(2)),
 		).ForEachCtx(func(ctx context.Context, _ int) error {
 			v, _ := ctx.Value(key{}).(string)
 			fromCtx = append(fromCtx, v)
@@ -135,33 +135,33 @@ func TestIoStream_MergeContexts(t *testing.T) {
 	t.Run("the same context passed many times is registered once", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
 		cctx, cancel := context.WithCancel(ctx)
-		streams := make([]chunkflow.IoStream[int], 50)
+		streams := make([]chunkflow.Stream[int], 50)
 		for i := range streams {
-			streams[i] = chunkflow.NewIo(cctx).Seq(seq.Items(i))
+			streams[i] = chunkflow.New(cctx).Seq(seq.Items(i))
 		}
-		res, err := chunkflow.IoMerge(streams...).Collect()
+		res, err := chunkflow.Merge(streams...).Collect()
 		require.NoError(t, err)
 		assert.Len(t, res, 50)
 		cancel()
 	})
 }
 
-func TestIoStream_Merge(t *testing.T) {
+func TestStream_Merge(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("emits every element of every source", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
-		res, err := chunkflow.IoMerge(
-			chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)),
-			chunkflow.NewIo(ctx).Seq(seq.Range(10, 15)),
-			chunkflow.NewIo(ctx).Seq(seq.Items[int]()),
+		res, err := chunkflow.Merge(
+			chunkflow.New(ctx).Seq(seq.Range(0, 5)),
+			chunkflow.New(ctx).Seq(seq.Range(10, 15)),
+			chunkflow.New(ctx).Seq(seq.Items[int]()),
 		).Collect()
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []int{0, 1, 2, 3, 4, 10, 11, 12, 13, 14}, res)
 	})
 
 	t.Run("with no arguments is empty", func(t *testing.T) {
-		res, err := chunkflow.IoMerge[int]().Collect()
+		res, err := chunkflow.Merge[int]().Collect()
 		require.NoError(t, err)
 		assert.Empty(t, res)
 	})
@@ -185,13 +185,13 @@ func TestIoStream_Merge(t *testing.T) {
 			}
 			close(gate)
 		}()
-		mk := func(v int) chunkflow.IoStream[int] {
-			return chunkflow.NewIo(ctx).Seq(seq.Items(v)).Tap(func(int) {
+		mk := func(v int) chunkflow.Stream[int] {
+			return chunkflow.New(ctx).Seq(seq.Items(v)).Tap(func(int) {
 				started.Add(1)
 				<-gate
 			})
 		}
-		res, err := chunkflow.IoMerge(mk(1), mk(2)).Collect()
+		res, err := chunkflow.Merge(mk(1), mk(2)).Collect()
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []int{1, 2}, res)
 		assert.Equal(t, int32(2), started.Load())
@@ -199,9 +199,9 @@ func TestIoStream_Merge(t *testing.T) {
 
 	t.Run("errors pass through and can be tolerated", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
-		res, err := chunkflow.IoMerge(
-			chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).MapCtx(failing), // 2,3,4 fail
-			chunkflow.NewIo(ctx).Seq(seq.Range(10, 13)),
+		res, err := chunkflow.Merge(
+			chunkflow.New(ctx).Seq(seq.Range(0, 5)).MapCtx(failing), // 2,3,4 fail
+			chunkflow.New(ctx).Seq(seq.Range(10, 13)),
 		).CircuitBreaker(100).Collect()
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []int{0, 1, 10, 11, 12}, res)
@@ -209,18 +209,18 @@ func TestIoStream_Merge(t *testing.T) {
 
 	t.Run("is fail-fast without a breaker", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
-		_, err := chunkflow.IoMerge(
-			chunkflow.NewIo(ctx).Seq2(errAfter(1, errBoom)),
-			chunkflow.NewIo(ctx).Seq(seq.Numbers(0)), // infinite: must be released
+		_, err := chunkflow.Merge(
+			chunkflow.New(ctx).Seq2(errAfter(1, errBoom)),
+			chunkflow.New(ctx).Seq(seq.Numbers(0)), // infinite: must be released
 		).Collect()
 		require.ErrorIs(t, err, errBoom)
 	})
 
 	t.Run("short-circuit releases all sources", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
-		res, err := chunkflow.IoMerge(
-			chunkflow.NewIo(ctx).Seq(seq.Numbers(0)),
-			chunkflow.NewIo(ctx).Seq(seq.Numbers(1000)),
+		res, err := chunkflow.Merge(
+			chunkflow.New(ctx).Seq(seq.Numbers(0)),
+			chunkflow.New(ctx).Seq(seq.Numbers(1000)),
 		).Take(5).Collect()
 		require.NoError(t, err)
 		assert.Len(t, res, 5)
@@ -232,9 +232,9 @@ func TestIoStream_Merge(t *testing.T) {
 		var seen atomic.Int32
 		done := make(chan error, 1)
 		go func() {
-			err := chunkflow.IoMerge(
-				chunkflow.NewIo(cctx).Seq(seq.Numbers(0)),
-				chunkflow.NewIo(cctx).Seq(seq.Numbers(0)),
+			err := chunkflow.Merge(
+				chunkflow.New(cctx).Seq(seq.Numbers(0)),
+				chunkflow.New(cctx).Seq(seq.Numbers(0)),
 			).Tap(func(int) { seen.Add(1) }).Exec()
 			done <- err
 		}()
@@ -253,9 +253,9 @@ func TestIoStream_Merge(t *testing.T) {
 		cctx, cancel := context.WithCancel(ctx)
 		cancel()
 		for range 20 {
-			_, err := chunkflow.IoMerge(
-				chunkflow.NewIo(cctx).Seq(seq.Range(0, 10)),
-				chunkflow.NewIo(cctx).Seq(seq.Range(0, 10)),
+			_, err := chunkflow.Merge(
+				chunkflow.New(cctx).Seq(seq.Range(0, 10)),
+				chunkflow.New(cctx).Seq(seq.Range(0, 10)),
 			).Collect()
 			require.ErrorIs(t, err, context.Canceled)
 		}

@@ -27,20 +27,20 @@ func explode(_ context.Context, i int) (int, error) {
 	return i, nil
 }
 
-func TestIoStream_PanicsBecomeErrors(t *testing.T) {
+func TestStream_PanicsBecomeErrors(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("sequential MapCtx: panic is returned as ErrPanic with partial results", func(t *testing.T) {
-		res, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).MapCtx(explode).Collect()
+		res, err := chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(explode).Collect()
 		require.ErrorIs(t, err, chunkflow.ErrPanic)
 		require.ErrorContains(t, err, "boom at 3")
-		assert.Contains(t, err.Error(), "iostream_panic_test.go", "the stack of the panicking goroutine is in the message")
+		assert.Contains(t, err.Error(), "stream_panic_test.go", "the stack of the panicking goroutine is in the message")
 		assert.Equal(t, []int{0, 1, 2}, res)
 	})
 
 	t.Run("parallel MapCtx: the worker panic does not kill the process and releases the pool", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
-		_, err := chunkflow.NewIo(ctx).Seq(seq.Numbers(0)). // infinite: workers must be released
+		_, err := chunkflow.New(ctx).Seq(seq.Numbers(0)). // infinite: workers must be released
 									MapCtx(explode, chunkflow.WithParallel(4)).
 									Collect()
 		require.ErrorIs(t, err, chunkflow.ErrPanic)
@@ -52,7 +52,7 @@ func TestIoStream_PanicsBecomeErrors(t *testing.T) {
 		var blocked, released atomic.Int32
 		panicked := make(chan struct{})
 
-		_, err := chunkflow.NewIo(ctx).Seq(seq.Numbers(0)). // infinite source
+		_, err := chunkflow.New(ctx).Seq(seq.Numbers(0)). // infinite source
 									MapCtx(func(ctx context.Context, i int) (int, error) {
 				if i == 0 {
 					// let the other workers park in their callbacks before blowing up
@@ -77,14 +77,14 @@ func TestIoStream_PanicsBecomeErrors(t *testing.T) {
 	})
 
 	t.Run("a panic with an error value keeps that error in the chain", func(t *testing.T) {
-		_, err := chunkflow.NewIo(ctx).Seq(seq.Items(5)).MapCtx(explode).Collect()
+		_, err := chunkflow.New(ctx).Seq(seq.Items(5)).MapCtx(explode).Collect()
 		require.ErrorIs(t, err, chunkflow.ErrPanic)
 		require.ErrorIs(t, err, errInside)
 	})
 
 	t.Run("CircuitBreaker never suppresses a panic and ends the stream", func(t *testing.T) {
 		var reported []error
-		res, err := chunkflow.NewIo(ctx, chunkflow.WithOnError(func(err error) { reported = append(reported, err) })).
+		res, err := chunkflow.New(ctx, chunkflow.WithOnError(func(err error) { reported = append(reported, err) })).
 			Seq(seq.Range(0, 10)).
 			MapCtx(func(ctx context.Context, i int) (int, error) {
 				if i == 1 {
@@ -104,19 +104,19 @@ func TestIoStream_PanicsBecomeErrors(t *testing.T) {
 	t.Run("panics in predicates and terminal callbacks are converted too", func(t *testing.T) {
 		boom := func(context.Context, int) (bool, error) { panic("pred") }
 
-		_, err := chunkflow.NewIo(ctx).Seq(seq.Items(1)).FilterCtx(boom).Collect()
+		_, err := chunkflow.New(ctx).Seq(seq.Items(1)).FilterCtx(boom).Collect()
 		require.ErrorIs(t, err, chunkflow.ErrPanic)
-		_, err = chunkflow.NewIo(ctx).Seq(seq.Items(1)).FilterCtx(boom, chunkflow.WithParallel(2)).Collect()
+		_, err = chunkflow.New(ctx).Seq(seq.Items(1)).FilterCtx(boom, chunkflow.WithParallel(2)).Collect()
 		require.ErrorIs(t, err, chunkflow.ErrPanic)
-		_, err = chunkflow.NewIo(ctx).Seq(seq.Items(1)).TakeWhileCtx(boom).Collect()
+		_, err = chunkflow.New(ctx).Seq(seq.Items(1)).TakeWhileCtx(boom).Collect()
 		require.ErrorIs(t, err, chunkflow.ErrPanic)
-		_, err = chunkflow.NewIo(ctx).Seq(seq.Items(1)).SkipWhileCtx(boom).Collect()
-		require.ErrorIs(t, err, chunkflow.ErrPanic)
-
-		_, err = chunkflow.NewIo(ctx).Seq(seq.Items(1, 2)).CompactFunc(func(int, int) bool { panic("eq") }).Collect()
+		_, err = chunkflow.New(ctx).Seq(seq.Items(1)).SkipWhileCtx(boom).Collect()
 		require.ErrorIs(t, err, chunkflow.ErrPanic)
 
-		err = chunkflow.NewIo(ctx).Seq(seq.Items(1)).ForEach(func(int) { panic("terminal") })
+		_, err = chunkflow.New(ctx).Seq(seq.Items(1, 2)).CompactFunc(func(int, int) bool { panic("eq") }).Collect()
+		require.ErrorIs(t, err, chunkflow.ErrPanic)
+
+		err = chunkflow.New(ctx).Seq(seq.Items(1)).ForEach(func(int) { panic("terminal") })
 		require.ErrorIs(t, err, chunkflow.ErrPanic)
 		assert.ErrorContains(t, err, "terminal")
 	})
@@ -124,7 +124,7 @@ func TestIoStream_PanicsBecomeErrors(t *testing.T) {
 	t.Run("CompactFunc: a panicking eq is reported in the element's position", func(t *testing.T) {
 		var values []int
 		var errs []error
-		for v, err := range chunkflow.NewIo(ctx).Seq(seq.Items(1, 1, 2)).
+		for v, err := range chunkflow.New(ctx).Seq(seq.Items(1, 1, 2)).
 			CompactFunc(func(int, int) bool { panic("eq") }).Seq() {
 			if err != nil {
 				errs = append(errs, err)
@@ -140,7 +140,7 @@ func TestIoStream_PanicsBecomeErrors(t *testing.T) {
 	t.Run("Seq exposes the panic as an element in position", func(t *testing.T) {
 		var values []int
 		var errs []error
-		for v, err := range chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).MapCtx(explode).Seq() {
+		for v, err := range chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(explode).Seq() {
 			if err != nil {
 				errs = append(errs, err)
 				continue
@@ -152,9 +152,13 @@ func TestIoStream_PanicsBecomeErrors(t *testing.T) {
 		assert.ErrorIs(t, errs[0], chunkflow.ErrPanic)
 	})
 
-	t.Run("Stream callbacks still panic: there is no error channel to convert into", func(t *testing.T) {
-		assert.PanicsWithValue(t, "plain", func() {
-			chunkflow.NewStream(seq.Items(1)).Map(func(int) int { panic("plain") }).Collect()
+	t.Run("a panic in the consumer is not mistaken for a callback panic", func(t *testing.T) {
+		// The guard is deferred once per stage; a panic raised by the loop body inside yield
+		// must pass through untouched instead of being reported as ErrPanic.
+		assert.PanicsWithValue(t, "consumer", func() {
+			for range chunkflow.New(ctx).Seq(seq.Items(1)).MapCtx(func(_ context.Context, i int) (int, error) { return i, nil }).Seq() {
+				panic("consumer")
+			}
 		})
 	})
 }

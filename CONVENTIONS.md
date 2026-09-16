@@ -13,18 +13,20 @@ new convention is introduced or an old one is changed; a convention without a re
   `DialContext`); `Ctx` is its short form. A suffix rather than a prefix keeps `Map` and `MapCtx`
   adjacent in godoc and in editor completion. The plain variant is a thin wrapper over the `*Ctx`
   one pinned to `WithParallel(1)`.
-- **`Io` prefix** marks the `IoStream` counterpart of a top-level `Stream` function: `Flatten` /
-  `IoFlatten`, `Compact` / `IoCompact`, `Concat` / `IoConcat`. *Why:* Go has no overloading, and
-  the prefix mirrors the type name. Functions that exist only for `IoStream` (`IoMerge`) carry it too.
+- **One stream type.** There is no separate in-memory, infallible stream. `Stream` carries a
+  context and an error channel and is a strict superset; a second type meant every operator, test
+  and doc twice and left semantic gaps that could not be closed (`Chunk(0)` panicking vs erroring,
+  panics vs `ErrPanic`, no `Merge`). Pure in-memory pipelines pass `context.Background()` and ignore
+  the error they know cannot happen. The removed type survives privately in `bench_test.go` as the
+  reference for what the error/context plumbing costs (~2x on pure data, same allocations); if that
+  ever matters to someone, that is the starting point for an opt-in type.
 - **Names come from the standard library when std has the operation**: `Concat` (`slices.Concat`),
   `Compact` (`slices.Compact`), `Seq` / `Seq2` (`iter`). *Why:* a reader who knows std knows the
   semantics without opening godoc.
 - **`Merge` vs `Concat`**: `Concat` is sequential and deterministic, `Merge` is a concurrent fan-in
   with interleaved order. Not `MergeOrdered` / `MergeUnordered`: "ordered merge" reads as the
-  merge-sort step over sorted inputs, and the two are not symmetric (`Merge` needs goroutines, so
-  there is no `Stream` variant).
-- **Constructors**: `NewStream(seq)` for `Stream`; `NewIo(ctx, opts...)` builder with `Seq`, `Seq2`,
-  `Chan` for `IoStream`. *Why:* the builder binds context and default options before the element
+  merge-sort step over sorted inputs.
+- **Constructors**: the `New(ctx, opts...)` builder with `Seq`, `Seq2`, `Chan`. *Why:* the builder binds context and default options before the element
   type is known, and each source kind is one generic method instead of one more top-level `New*`.
   There are no convenience constructors (`FromItems`, `Range`, ...) in the root package; generators
   live in `seq` and return plain `iter.Seq`, so they also work with `slices.Collect` and `range`.
@@ -40,15 +42,16 @@ new convention is introduced or an old one is changed; a convention without a re
   error that is not marked `ErrSuppressed`. Only `CircuitBreaker` marks errors as tolerated; it never
   drops or logs them, so `Seq()` shows everything. *Why:* silent data loss is the worst failure mode
   of a pipeline; observability stays with the consumer.
-- **Panics in `IoStream` callbacks become `ErrPanic` errors, never re-panics.** Recovered at the
-  call site (also inside workers), pushed downstream in position, never suppressed by
-  `CircuitBreaker`, returned by every terminal. *Why:* `recover` only works on the panicking
-  goroutine, so a worker panic can only be reported as data; doing the same on the sequential path
-  keeps `WithParallel(1)` and `WithParallel(8)` — and `Seq()` consumers — behaving identically. `Stream`
-  has no error channel, so its callbacks still panic.
+- **Panics in callbacks become `ErrPanic` errors, never re-panics.** Recovered once per stage
+  (also inside workers) with the callback boundary marked by a bool, pushed downstream in position,
+  never suppressed by `CircuitBreaker`, returned by every terminal. *Why:* `recover` only works on
+  the panicking goroutine, so a worker panic can only be reported as data; doing the same on the
+  sequential path keeps `WithParallel(1)` and `WithParallel(8)` — and `Seq()` consumers — behaving
+  identically. One guard per stage instead of per element: the per-element `defer recover()` cost
+  half of the pipeline's CPU time in benchmarks.
 - **Type-changing operations are top-level functions used via `Through`.** A method cannot add a
   constraint on the receiver's type parameter (`Flatten` needs `Stream[[]E]`, `Compact` needs
-  `comparable`). `Through` keeps the left-to-right reading order.
+  `comparable`), and Go has no overloading. `Through` keeps the left-to-right reading order.
 - **Generic methods introduce new type parameters** (`Map[R]`, `Chunk[R]`, `Seq[T]` on the builder)
   wherever the receiver's own parameters suffice as constraints. This is the language feature the
   library is built on; use it before reaching for a top-level function.
@@ -58,8 +61,8 @@ new convention is introduced or an old one is changed; a convention without a re
 - **Rule of three.** Do not generalise from one case. `CircuitBreaker` stays a concrete operator until
   a second error policy shows up; `Zip3` is not added until someone needs it; there is no `Distinct`
   because a global "seen" set belongs to the user's store, not inside the pipeline
-  (see `ExampleIoStream_Chunk_deduplication`).
-- **Two option kinds, checked by the compiler.** `Option` configures a whole pipeline (`NewIo`,
+  (see `ExampleStream_Chunk_deduplication`).
+- **Two option kinds, checked by the compiler.** `Option` configures a whole pipeline (`New`,
   `Opts`) and is inherited downstream; `StepOption` configures one `*Ctx` call and is also an
   `Option`. `WithParallel` is a `StepOption`, `WithOnError` a pipeline-only `Option`, so
   `MapCtx(fn, WithOnError(...))` and `ReduceCtx(init, fn, WithParallel(4))` do not compile.
@@ -88,15 +91,15 @@ new convention is introduced or an old one is changed; a convention without a re
   and therefore never sees errors that come after it.
 - `Compact` removes only *adjacent* duplicates (input must be sorted or grouped), in O(1) memory.
 - `Chan` streams are single-use and stopping early does not close or drain the channel.
-- Combinators over several `IoStream`s (`IoConcat`, `IoMerge`) take values and deadline from the
+- Combinators over several `Stream`s (`Concat`, `Merge`) take values and deadline from the
   first stream's context and are cancelled by any stream's context, with the original cause kept.
 - Cancellation always surfaces as an error element, also when a worker pool exits without emitting.
 
 ## Code layout
 
-- `iostream.go` / `stream.go`: exported types and constructors, then exported methods (intermediate,
+- `stream.go`: exported types and constructors, then exported methods (intermediate,
   then terminal), then exported functions, then everything unexported (types, functions, methods).
-- Every derived `IoStream` is built through `derive` / `errStream`; every terminal goes through
+- Every derived `Stream` is built through `derive` / `errStream`; every terminal goes through
   `each`. Errored elements are forwarded with `if !yield(...) { return }; continue`.
 
 ## Testing

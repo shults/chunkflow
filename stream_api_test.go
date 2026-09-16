@@ -13,12 +13,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIoStream_AlignedWithStream(t *testing.T) {
+func TestStream_AlignedWithStream(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("Filter drops non-matching items", func(t *testing.T) {
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Range(1, 10)).
+			New(ctx).Seq(seq.Range(1, 10)).
 			Filter(func(i int) bool { return i%2 == 0 }).
 			Collect()
 		require.NoError(t, err)
@@ -28,7 +28,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	t.Run("Tap observes values and passes them through", func(t *testing.T) {
 		var seen []int
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Range(1, 4)).
+			New(ctx).Seq(seq.Range(1, 4)).
 			Tap(func(i int) { seen = append(seen, i) }).
 			Collect()
 		require.NoError(t, err)
@@ -39,7 +39,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	t.Run("Tap never sees errors and lets them flow", func(t *testing.T) {
 		var seen []int
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Range(0, 10)).
+			New(ctx).Seq(seq.Range(0, 10)).
 			MapCtx(failing). // 2,3,4 fail
 			Tap(func(i int) { seen = append(seen, i) }).
 			CircuitBreaker(100).
@@ -52,7 +52,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	t.Run("TapCtx error replaces the value and is fatal for terminals", func(t *testing.T) {
 		errAudit := errors.New("audit")
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Range(1, 6)).
+			New(ctx).Seq(seq.Range(1, 6)).
 			TapCtx(func(_ context.Context, i int) error {
 				if i == 3 {
 					return errAudit
@@ -70,7 +70,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		var okCtx, calls atomic.Int32
 
 		res, err := chunkflow.
-			NewIo(cctx).Seq(seq.Range(0, 20)).
+			New(cctx).Seq(seq.Range(0, 20)).
 			TapCtx(func(ctx context.Context, _ int) error {
 				calls.Add(1)
 				if v, _ := ctx.Value(key{}).(string); v == "tap" {
@@ -88,7 +88,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	t.Run("Any short-circuits on first match", func(t *testing.T) {
 		evaluated := 0
 		ok, err := chunkflow.
-			NewIo(ctx).Seq(seq.Numbers(1)).
+			New(ctx).Seq(seq.Numbers(1)).
 			Map(func(i int) int {
 				evaluated++
 				return i
@@ -100,12 +100,12 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	})
 
 	t.Run("First returns element or reports empty", func(t *testing.T) {
-		val, ok, err := chunkflow.NewIo(ctx).Seq(seq.Items(99, 100)).First()
+		val, ok, err := chunkflow.New(ctx).Seq(seq.Items(99, 100)).First()
 		require.NoError(t, err)
 		assert.True(t, ok)
 		assert.Equal(t, 99, val)
 
-		val, ok, err = chunkflow.NewIo(ctx).Seq(seq.Items[int]()).First()
+		val, ok, err = chunkflow.New(ctx).Seq(seq.Items[int]()).First()
 		require.NoError(t, err)
 		assert.False(t, ok)
 		assert.Equal(t, 0, val)
@@ -114,7 +114,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	t.Run("First propagates error", func(t *testing.T) {
 		boom := errors.New("boom")
 		_, ok, err := chunkflow.
-			NewIo(ctx).Seq(seq.Items(1)).
+			New(ctx).Seq(seq.Items(1)).
 			MapCtx(func(context.Context, int) (int, error) { return 0, boom }).
 			First()
 		require.ErrorIs(t, err, boom)
@@ -122,7 +122,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	})
 
 	t.Run("Last returns final element", func(t *testing.T) {
-		val, ok, err := chunkflow.NewIo(ctx).Seq(seq.Items(1, 2, 99)).Last()
+		val, ok, err := chunkflow.New(ctx).Seq(seq.Items(1, 2, 99)).Last()
 		require.NoError(t, err)
 		assert.True(t, ok)
 		assert.Equal(t, 99, val)
@@ -133,7 +133,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		var vals []int
 		var errs []error
 		s := chunkflow.
-			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
+			New(ctx).Seq(seq.Items(1, 2, 3)).
 			MapCtx(func(_ context.Context, i int) (int, error) {
 				if i == 2 {
 					return 0, boom
@@ -151,7 +151,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	t.Run("Seq2 round-trips through Seq", func(t *testing.T) {
 		boom := errors.New("boom")
 		src := chunkflow.
-			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
+			New(ctx).Seq(seq.Items(1, 2, 3)).
 			MapCtx(func(_ context.Context, i int) (int, error) {
 				if i == 3 {
 					return 0, boom
@@ -159,16 +159,16 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 				return i * 10, nil
 			})
 
-		res, err := chunkflow.NewIo(ctx).Seq2(src.Seq()).Collect()
+		res, err := chunkflow.New(ctx).Seq2(src.Seq()).Collect()
 		require.ErrorIs(t, err, boom)
 		assert.Equal(t, []int{10, 20}, res)
 	})
 
-	t.Run("IoFlatten via Through", func(t *testing.T) {
+	t.Run("Flatten via Through", func(t *testing.T) {
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Range(1, 6)).
+			New(ctx).Seq(seq.Range(1, 6)).
 			Chunk[[]int](2).
-			Through(chunkflow.IoFlatten).
+			Through(chunkflow.Flatten).
 			Map(func(i int) int { return i * 10 }).
 			Collect()
 		require.NoError(t, err)
@@ -176,13 +176,13 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	})
 
 	t.Run("Count returns number of elements or count before error", func(t *testing.T) {
-		n, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 7)).Count()
+		n, err := chunkflow.New(ctx).Seq(seq.Range(0, 7)).Count()
 		require.NoError(t, err)
 		assert.Equal(t, 7, n)
 
 		boom := errors.New("boom")
 		n, err = chunkflow.
-			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
+			New(ctx).Seq(seq.Items(1, 2, 3)).
 			MapCtx(func(_ context.Context, i int) (int, error) {
 				if i == 3 {
 					return 0, boom
@@ -198,7 +198,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		boom := errors.New("boom")
 		var seen []int
 		err := chunkflow.
-			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
+			New(ctx).Seq(seq.Items(1, 2, 3)).
 			ForEachCtx(func(_ context.Context, i int) error {
 				seen = append(seen, i)
 				if i == 2 {
@@ -211,7 +211,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 	})
 }
 
-func TestIoStream_Options(t *testing.T) {
+func TestStream_Options(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("Opts are inherited by derived streams", func(t *testing.T) {
@@ -238,7 +238,7 @@ func TestIoStream_Options(t *testing.T) {
 		}()
 
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Range(0, workers)).
+			New(ctx).Seq(seq.Range(0, workers)).
 			Opts(chunkflow.WithParallel(workers)).
 			Skip(0). // derived stream must still carry the configured concurrency
 			MapCtx(func(_ context.Context, i int) (int, error) {
@@ -255,7 +255,7 @@ func TestIoStream_Options(t *testing.T) {
 
 	t.Run("WithOnError sees suppressed errors and the fatal one, in order", func(t *testing.T) {
 		var seen []error
-		res, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).
+		res, err := chunkflow.New(ctx).Seq(seq.Range(0, 10)).
 			Opts(chunkflow.WithOnError(func(err error) { seen = append(seen, err) })).
 			MapCtx(failing). // 2,3,4 fail
 			CircuitBreaker(3).
@@ -273,7 +273,7 @@ func TestIoStream_Options(t *testing.T) {
 	t.Run("WithOnError sees terminal callback errors too", func(t *testing.T) {
 		errCb := errors.New("callback")
 		var seen []error
-		err := chunkflow.NewIo(ctx, chunkflow.WithOnError(func(err error) { seen = append(seen, err) })).
+		err := chunkflow.New(ctx, chunkflow.WithOnError(func(err error) { seen = append(seen, err) })).
 			Seq(seq.Items(1, 2)).
 			ForEachCtx(func(context.Context, int) error { return errCb })
 		require.ErrorIs(t, err, errCb)
@@ -282,7 +282,7 @@ func TestIoStream_Options(t *testing.T) {
 
 	t.Run("WithOnError is inherited through derived streams", func(t *testing.T) {
 		calls := 0
-		_, err := chunkflow.NewIo(ctx, chunkflow.WithOnError(func(error) { calls++ })).Seq(seq.Range(0, 5)).
+		_, err := chunkflow.New(ctx, chunkflow.WithOnError(func(error) { calls++ })).Seq(seq.Range(0, 5)).
 			MapCtx(failing). // 2,3,4 fail
 			CircuitBreaker(100).
 			Skip(0).
@@ -292,15 +292,15 @@ func TestIoStream_Options(t *testing.T) {
 	})
 
 	t.Run("invalid options become an error stream wherever they are applied", func(t *testing.T) {
-		src := func() chunkflow.IoStream[int] { return chunkflow.NewIo(ctx).Seq(seq.Items(1, 2, 3)) }
+		src := func() chunkflow.Stream[int] { return chunkflow.New(ctx).Seq(seq.Items(1, 2, 3)) }
 
 		_, err := src().Opts(chunkflow.WithOnError(nil)).Collect()
 		require.ErrorContains(t, err, "WithOnError: nil callback")
 
-		_, err = chunkflow.NewIo(ctx, chunkflow.WithOnError(nil)).Seq(seq.Items(1)).Collect()
+		_, err = chunkflow.New(ctx, chunkflow.WithOnError(nil)).Seq(seq.Items(1)).Collect()
 		require.ErrorContains(t, err, "WithOnError: nil callback")
 
-		_, err = chunkflow.NewIo(ctx, chunkflow.WithParallel(0)).Chan(make(chan int)).Collect()
+		_, err = chunkflow.New(ctx, chunkflow.WithParallel(0)).Chan(make(chan int)).Collect()
 		require.ErrorContains(t, err, "concurrency must be at least 1", "reported even though the channel would block")
 
 		_, err = src().Opts(chunkflow.WithParallel(-1)).Collect()
@@ -319,7 +319,7 @@ func TestIoStream_Options(t *testing.T) {
 
 	t.Run("FilterCtx rejects concurrency below 1", func(t *testing.T) {
 		_, err := chunkflow.
-			NewIo(ctx).Seq(seq.Items(1)).
+			New(ctx).Seq(seq.Items(1)).
 			FilterCtx(func(context.Context, int) (bool, error) { return true, nil }, chunkflow.WithParallel(0)).
 			Collect()
 		assert.ErrorContains(t, err, "concurrency must be at least 1")
@@ -328,7 +328,7 @@ func TestIoStream_Options(t *testing.T) {
 	t.Run("cancelled context surfaces as error", func(t *testing.T) {
 		cctx, cancel := context.WithCancel(ctx)
 		cancel()
-		_, err := chunkflow.NewIo(cctx).Seq(seq.Numbers(0)).Take(3).Collect()
+		_, err := chunkflow.New(cctx).Seq(seq.Numbers(0)).Take(3).Collect()
 		assert.ErrorIs(t, err, context.Canceled)
 	})
 
@@ -340,13 +340,13 @@ func TestIoStream_Options(t *testing.T) {
 			cancel()
 
 			_, err := chunkflow.
-				NewIo(cctx).Seq(seq.Range(0, 100)).
+				New(cctx).Seq(seq.Range(0, 100)).
 				MapCtx(func(_ context.Context, i int) (int, error) { return i, nil }, chunkflow.WithParallel(4)).
 				Collect()
 			require.ErrorIs(t, err, context.Canceled)
 
 			_, err = chunkflow.
-				NewIo(cctx).Seq(seq.Range(0, 100)).
+				New(cctx).Seq(seq.Range(0, 100)).
 				FilterCtx(func(context.Context, int) (bool, error) { return true, nil }, chunkflow.WithParallel(4)).
 				Collect()
 			require.ErrorIs(t, err, context.Canceled)

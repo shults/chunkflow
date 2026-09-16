@@ -16,7 +16,7 @@ import (
 func TestIoBuilder(t *testing.T) {
 	ctx := t.Context()
 
-	t.Run("options given to NewIo become pipeline defaults", func(t *testing.T) {
+	t.Run("options given to New become pipeline defaults", func(t *testing.T) {
 		const workers = 4
 		var entered atomic.Int32
 		var timedOut atomic.Bool
@@ -35,7 +35,7 @@ func TestIoBuilder(t *testing.T) {
 			}
 		}()
 
-		res, err := chunkflow.NewIo(ctx, chunkflow.WithParallel(workers)).
+		res, err := chunkflow.New(ctx, chunkflow.WithParallel(workers)).
 			Seq(seq.Range(0, workers)).
 			MapCtx(func(_ context.Context, i int) (int, error) {
 				entered.Add(1)
@@ -45,11 +45,11 @@ func TestIoBuilder(t *testing.T) {
 			Collect()
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []int{0, 1, 2, 3}, res)
-		assert.False(t, timedOut.Load(), "WithParallel from NewIo was not applied to MapCtx")
+		assert.False(t, timedOut.Load(), "WithParallel from New was not applied to MapCtx")
 	})
 
 	t.Run("the same builder can produce streams of different types", func(t *testing.T) {
-		b := chunkflow.NewIo(ctx)
+		b := chunkflow.New(ctx)
 		ints, err := b.Seq(seq.Items(1, 2)).Collect()
 		require.NoError(t, err)
 		strs, err := b.Seq(seq.Items("a")).Collect()
@@ -61,17 +61,17 @@ func TestIoBuilder(t *testing.T) {
 	t.Run("Seq attaches the context error once cancelled", func(t *testing.T) {
 		cctx, cancel := context.WithCancel(ctx)
 		cancel()
-		_, err := chunkflow.NewIo(cctx).Seq(seq.Numbers(0)).Take(1).Collect()
+		_, err := chunkflow.New(cctx).Seq(seq.Numbers(0)).Take(1).Collect()
 		require.ErrorIs(t, err, context.Canceled)
 	})
 
 	t.Run("Seq2 keeps source errors and adds the context error to clean elements", func(t *testing.T) {
 		cctx, cancel := context.WithCancel(ctx)
 		cancel()
-		_, err := chunkflow.NewIo(cctx).Seq2(errAfter(3, errBoom)).Collect()
+		_, err := chunkflow.New(cctx).Seq2(errAfter(3, errBoom)).Collect()
 		require.ErrorIs(t, err, context.Canceled, "the first element is clean at the source but the context is gone")
 
-		_, err = chunkflow.NewIo(ctx).Seq2(errAfter(3, errBoom)).Collect()
+		_, err = chunkflow.New(ctx).Seq2(errAfter(3, errBoom)).Collect()
 		require.ErrorIs(t, err, errBoom)
 	})
 }
@@ -88,7 +88,7 @@ func TestIoBuilder_Chan(t *testing.T) {
 				ch <- i
 			}
 		}()
-		res, err := chunkflow.NewIo(ctx).Chan(ch).Collect()
+		res, err := chunkflow.New(ctx).Chan(ch).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 1, 2, 3, 4}, res)
 	})
@@ -96,7 +96,7 @@ func TestIoBuilder_Chan(t *testing.T) {
 	t.Run("a closed empty channel is an empty stream", func(t *testing.T) {
 		ch := make(chan int)
 		close(ch)
-		res, err := chunkflow.NewIo(ctx).Chan(ch).Collect()
+		res, err := chunkflow.New(ctx).Chan(ch).Collect()
 		require.NoError(t, err)
 		assert.Empty(t, res)
 	})
@@ -108,7 +108,7 @@ func TestIoBuilder_Chan(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			_, err := chunkflow.NewIo(cctx).Chan(ch).Collect()
+			_, err := chunkflow.New(cctx).Chan(ch).Collect()
 			done <- err
 		}()
 		time.Sleep(10 * time.Millisecond) // let Collect block on <-ch
@@ -128,7 +128,7 @@ func TestIoBuilder_Chan(t *testing.T) {
 		ch <- 1
 		ch <- 2
 		var got []int
-		err := chunkflow.NewIo(cctx).Chan(ch).ForEach(func(i int) {
+		err := chunkflow.New(cctx).Chan(ch).ForEach(func(i int) {
 			got = append(got, i)
 			if i == 2 {
 				cancel()
@@ -144,7 +144,7 @@ func TestIoBuilder_Chan(t *testing.T) {
 		for i := range 5 {
 			ch <- i
 		}
-		res, err := chunkflow.NewIo(ctx).Chan(ch).Take(2).Collect()
+		res, err := chunkflow.New(ctx).Chan(ch).Take(2).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 1}, res)
 		assert.Len(t, ch, 3, "unread items stay in the channel; the channel is not closed or drained")
@@ -156,7 +156,7 @@ func TestIoBuilder_Chan(t *testing.T) {
 			ch <- i
 		}
 		close(ch)
-		s := chunkflow.NewIo(ctx).Chan(ch)
+		s := chunkflow.New(ctx).Chan(ch)
 		first, err := s.Take(3).Collect()
 		require.NoError(t, err)
 		second, err := s.Collect()
@@ -182,7 +182,7 @@ func TestIoBuilder_Chan(t *testing.T) {
 			}
 		}()
 
-		res, err := chunkflow.NewIo(cctx, chunkflow.WithParallel(3)).
+		res, err := chunkflow.New(cctx, chunkflow.WithParallel(3)).
 			Chan(jobs).
 			MapCtx(func(_ context.Context, i int) (int, error) { return i * 2, nil }).
 			Take(10).

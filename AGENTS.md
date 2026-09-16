@@ -41,7 +41,7 @@ Prefer wrapping long-running shell steps in `timeout`.
 
 - Intermediate operators forward errored elements with `if !yield(...) { return }; continue` and
   never `return` on an error, never drop one, never log one. Terminals go through `each`.
-- Every derived `IoStream` is built through `derive` / `errStream` so `ctx` and options propagate.
+- Every derived `Stream` is built through `derive` / `errStream` so `ctx` and options propagate.
 - Do not export a type to carry internal state; expose a sentinel or a constructor instead.
 - No new operator without a concrete use case (rule of three); when in doubt, add an example
   showing the composition instead.

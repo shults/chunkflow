@@ -1,6 +1,6 @@
 # ChunkFlow
 
-**ChunkFlow** is a rigorous, lazily evaluated data pipeline for Go 1.27+. It wraps the native `iter.Seq` interface, providing a type-safe Fluent API tailored for stream processing, transformations, and data chunking for I/O operations (ETL).
+**ChunkFlow** is a lazily evaluated data pipeline for Go 1.27+. It wraps native `iter.Seq` iterators in a type-safe fluent API built on generic methods, and adds what I/O-bound stream processing (ETL) needs on top: a context, errors that travel as elements, worker pools, a circuit breaker and chunking.
 
 ## Architecture & Constraints
 
@@ -32,7 +32,7 @@ import (
 func main() {
 
     res := chunkflow.
-        NewStream(seq.Numbers(1)). // 1. Wrap an infinite iterator; Skip(5) and Take(20) limit consumption to exactly 25 elements.
+        New(seq.Numbers(1)). // 1. Wrap an infinite iterator; Skip(5) and Take(20) limit consumption to exactly 25 elements.
         Skip(5).
         Take(20).
         Filter(func(i int) bool { // 2. Lazy filtering on the fly.
@@ -62,20 +62,19 @@ The pre-commit hook lives in `.githooks/` and is enabled via `core.hooksPath`. S
 
 ### Constructors
 
-`Stream[T]` is created from a native iterator. `IoStream[T]` is created through a small builder:
-`NewIo` binds the context and default options first, and the source method picks the element type.
+A `Stream[T]` is created through a small builder: `New` binds the context and default options first,
+and the source method picks the element type.
 
 | Function | Description |
 | --- | --- |
-| `NewStream(iter.Seq[T])` | Wraps a native iterator into a synchronous `Stream[T]`. |
-| `NewIo(ctx, ...Option)` | Starts an `IoStream` bound to `ctx`; options become the pipeline defaults. |
-| `NewIo(ctx).Seq(iter.Seq[T])` | Wraps a native iterator. The context is checked before every element. |
-| `NewIo(ctx).Seq2(iter.Seq2[T, error])` | Wraps a `(value, error)` iterator. Inverse of `IoStream.Seq()`. |
-| `NewIo(ctx).Chan(<-chan T)` | Reads a channel until it is closed or the context is cancelled. Single-use; stopping early does not close the channel. |
+| `New(ctx, ...Option)` | Starts a `Stream` bound to `ctx`; options become the pipeline defaults. |
+| `New(ctx).Seq(iter.Seq[T])` | Wraps a native iterator. The context is checked before every element. |
+| `New(ctx).Seq2(iter.Seq2[T, error])` | Wraps a `(value, error)` iterator. Inverse of `Stream.Seq()`. |
+| `New(ctx).Chan(<-chan T)` | Reads a channel until it is closed or the context is cancelled. Single-use; stopping early does not close the channel. |
 
 ### Generators (`seq` sub-package)
 
-Iterator generators live in `github.com/shults/chunkflow/seq`. They return plain `iter.Seq[T]`, so they work with `NewStream`, `NewIo(ctx).Seq`, `slices.Collect` and `range` loops alike.
+Iterator generators live in `github.com/shults/chunkflow/seq`. They return plain `iter.Seq[T]`, so they work with `New(ctx).Seq`, `slices.Collect` and `range` loops alike.
 
 | Function | Description | Length |
 | --- | --- | --- |
@@ -90,7 +89,6 @@ Iterator generators live in `github.com/shults/chunkflow/seq`. They return plain
 ### Intermediate Operations (Lazy Transformations)
 
 These modify the pipeline logic but execute absolutely no work until a terminal operation is invoked.
-Every method below exists with the same name and shape on both `Stream[T]` and `IoStream[T]`.
 
 | Method | Signature | Description |
 | --- | --- | --- |
@@ -105,7 +103,7 @@ Every method below exists with the same name and shape on both `Stream[T]` and `
 | `Chunk` | `Chunk[R ~[]T](int)` | Groups elements into physical slices of the given size. |
 | `Through` | `Through[R](func(Stream) Stream)` | Pipes the stream through an external top-level function. |
 
-`IoStream[T]` additionally offers context-aware, error-returning variants and concurrency:
+Context-aware, error-returning variants and concurrency:
 
 | Method | Signature | Description |
 | --- | --- | --- |
@@ -119,7 +117,7 @@ Every method below exists with the same name and shape on both `Stream[T]` and `
 `WithParallel` is a `StepOption` and may also be passed to a single `MapCtx` / `FilterCtx` / `TapCtx` call;
 `WithOnError` is pipeline-only, so passing it to a step does not compile. `ReduceCtx` takes no options: a fold is sequential.
 
-#### Error semantics in `IoStream`
+#### Error semantics
 
 An error from the source or from a callback travels down the pipeline **as an element**. Intermediate
 operations pass it through and keep processing the remaining input (`Take`/`Skip` do not count errors,
@@ -152,36 +150,34 @@ for v, err := range stream.CircuitBreaker(5).Seq() {
 
 ### Top-Level Functions
 
+Operations that change the element type or need a constraint a method cannot express. Use them with `.Through()`.
+
 | Function | Signature | Description |
 | --- | --- | --- |
-| `Flatten` | `Flatten[E](Stream[[]E])` | Unwraps a stream of slices into a flat stream of elements. Use with `.Through()`. |
-| `IoFlatten` | `IoFlatten[E](IoStream[[]E])` | `IoStream` counterpart of `Flatten`. Use with `.Through()`. |
-| `Compact` | `Compact[T comparable](Stream[T])` | `CompactFunc` with `==`. Needs `comparable`, hence top-level. Use with `.Through()`. |
-| `IoCompact` | `IoCompact[T comparable](IoStream[T])` | `IoStream` counterpart of `Compact`. Use with `.Through()`. |
-| `Concat` | `Concat(...Stream[T])` | Emits the streams one after another, deterministic order. Name follows `slices.Concat`. |
-| `IoConcat` | `IoConcat(...IoStream[T])` | `IoStream` counterpart of `Concat`; errors keep their position. |
-| `IoMerge` | `IoMerge(...IoStream[T])` | Consumes all streams concurrently and interleaves elements as they arrive. No `Stream` variant: needs goroutines and a context. |
+| `Flatten` | `Flatten[E](Stream[[]E])` | Unwraps a stream of slices into a flat stream of elements. |
+| `Compact` | `Compact[T comparable](Stream[T])` | `CompactFunc` with `==`. Needs `comparable`, hence top-level. |
+| `Concat` | `Concat(...Stream[T])` | Emits the streams one after another, deterministic order; errors keep their position. Name follows `slices.Concat`. |
+| `Merge` | `Merge(...Stream[T])` | Consumes all streams concurrently and interleaves elements as they arrive. |
 
 ### Terminal Operations (Execution Triggers)
 
-These pull the trigger, forcing the intermediate pipeline to evaluate. On `IoStream[T]` every terminal
-operation additionally returns an `error`: the first error produced upstream (or by the callback) stops
-consumption and is returned.
+These pull the trigger, forcing the intermediate pipeline to evaluate. Every terminal operation returns
+an `error`: the first error produced upstream (or by the callback) stops consumption and is returned.
 
-| Method | `Stream` returns | `IoStream` returns | Description | Warning |
-| --- | --- | --- | --- | --- |
-| `Collect` | `[]T` | `([]T, error)` | Materializes all processed elements into a slice. | OOM risk for infinite streams |
-| `Reduce` | `Reduce[R](init R, fn(acc R, item T) R) R` | `(R, error)` | Folds elements into an accumulator of any type; `fn(acc, item)` order. | Requires a finite stream |
-| `ForEach` | - | `error` | Executes a side effect for every element. | Blocks until completion |
-| `Exec` | - | `error` | Exhausts the stream, discarding values. | - |
-| `Count` | `int` | `(int, error)` | Consumes the stream and returns the number of elements. | Requires a finite stream |
-| `Any` | `bool` | `(bool, error)` | Short-circuits and returns true on the first match. **Empty stream: `false`.** | - |
-| `All` | `bool` | `(bool, error)` | Short-circuits and returns false on the first mismatch. **Empty stream: `true`** (vacuous truth). | - |
-| `First` | `(T, bool)` | `(T, bool, error)` | Retrieves the first element and short-circuits. | - |
-| `Last` | `(T, bool)` | `(T, bool, error)` | Consumes the entire stream to return the final element. | Requires a finite stream |
-| `Seq` | `iter.Seq[T]` | `iter.Seq2[T, error]` | Exposes the pipeline as a native iterator. | - |
+| Method | Returns | Description | Warning |
+| --- | --- | --- | --- |
+| `Collect` | `([]T, error)` | Materializes all processed elements into a slice. | OOM risk for infinite streams |
+| `Reduce[R](init R, fn(acc R, item T) R)` | `(R, error)` | Folds elements into an accumulator of any type; `fn(acc, item)` order. | Requires a finite stream |
+| `ForEach` | `error` | Executes a side effect for every element. | Blocks until completion |
+| `Exec` | `error` | Exhausts the stream, discarding values. | - |
+| `Count` | `(int, error)` | Consumes the stream and returns the number of elements. | Requires a finite stream |
+| `Any` | `(bool, error)` | Short-circuits and returns true on the first match. **Empty stream: `false`.** | - |
+| `All` | `(bool, error)` | Short-circuits and returns false on the first mismatch. **Empty stream: `true`** (vacuous truth). | - |
+| `First` | `(T, bool, error)` | Retrieves the first element and short-circuits. | - |
+| `Last` | `(T, bool, error)` | Consumes the entire stream to return the final element. | Requires a finite stream |
+| `Seq` | `iter.Seq2[T, error]` | Exposes the pipeline as a native iterator. | - |
 
-`IoStream[T]` also provides `ReduceCtx`, `AllCtx`, `AnyCtx` and `ForEachCtx`, whose callbacks
+`ReduceCtx`, `AllCtx`, `AnyCtx` and `ForEachCtx` take callbacks that
 receive the `context.Context` and may return an error. `Reduce` and `ReduceCtx` are generic in the
 accumulator type `R`, so a stream of strings can fold into an `int` or a `map`.
 

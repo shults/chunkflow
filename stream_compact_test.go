@@ -10,12 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIoStream_Compact(t *testing.T) {
+func TestStream_Compact(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("drops only consecutive duplicates", func(t *testing.T) {
-		res, err := chunkflow.NewIo(ctx).Seq(seq.Items(1, 1, 2, 2, 2, 3, 1, 1)).
-			Through(chunkflow.IoCompact).
+		res, err := chunkflow.New(ctx).Seq(seq.Items(1, 1, 2, 2, 2, 3, 1, 1)).
+			Through(chunkflow.Compact).
 			Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{1, 2, 3, 1}, res)
@@ -24,7 +24,7 @@ func TestIoStream_Compact(t *testing.T) {
 	t.Run("CompactFunc with custom equality keeps the first of each run", func(t *testing.T) {
 		type row struct{ key, payload string }
 		res, err := chunkflow.
-			NewIo(ctx).Seq(slices.Values([]row{
+			New(ctx).Seq(slices.Values([]row{
 			{"a", "1"},
 			{"a", "2"},
 			{"b", "3"},
@@ -50,7 +50,7 @@ func TestIoStream_Compact(t *testing.T) {
 		}
 		var values []int
 		var suppressed int
-		for v, err := range chunkflow.NewIo(ctx).Seq2(src).Through(chunkflow.IoCompact).CircuitBreaker(100).Seq() {
+		for v, err := range chunkflow.New(ctx).Seq2(src).Through(chunkflow.Compact).CircuitBreaker(100).Seq() {
 			if err != nil {
 				require.ErrorIs(t, err, chunkflow.ErrSuppressed)
 				suppressed++
@@ -63,16 +63,16 @@ func TestIoStream_Compact(t *testing.T) {
 	})
 
 	t.Run("is fail-fast without a breaker", func(t *testing.T) {
-		res, err := chunkflow.NewIo(ctx).Seq2(errAfter(3, errBoom)).Through(chunkflow.IoCompact).Collect()
+		res, err := chunkflow.New(ctx).Seq2(errAfter(3, errBoom)).Through(chunkflow.Compact).Collect()
 		require.ErrorIs(t, err, errBoom)
 		assert.Equal(t, []int{0, 1, 2}, res)
 	})
 
 	t.Run("stops pulling once the consumer is done", func(t *testing.T) {
 		pulled := 0
-		v, ok, err := chunkflow.NewIo(ctx).Seq(seq.Const(7)).
+		v, ok, err := chunkflow.New(ctx).Seq(seq.Const(7)).
 			Tap(func(int) { pulled++ }).
-			Through(chunkflow.IoCompact).
+			Through(chunkflow.Compact).
 			First()
 		require.NoError(t, err)
 		assert.True(t, ok)
@@ -82,7 +82,7 @@ func TestIoStream_Compact(t *testing.T) {
 
 	t.Run("CompactFunc receives values in (previous, current) order", func(t *testing.T) {
 		var pairs [][2]int
-		_, err := chunkflow.NewIo(ctx).Seq(seq.Items(1, 2, 3)).
+		_, err := chunkflow.New(ctx).Seq(seq.Items(1, 2, 3)).
 			CompactFunc(func(prev, cur int) bool {
 				pairs = append(pairs, [2]int{prev, cur})
 				return false

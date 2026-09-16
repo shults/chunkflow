@@ -26,14 +26,14 @@ func blockUntilCancelled[T any](ctx context.Context, item T) (T, error) {
 	return item, ctx.Err()
 }
 
-func TestIoStream_NoGoroutineLeaks(t *testing.T) {
+func TestStream_NoGoroutineLeaks(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("consumer short-circuits with Take after parallel MapCtx on infinite source", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
 
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Numbers(0)).
+			New(ctx).Seq(seq.Numbers(0)).
 			MapCtx(func(_ context.Context, i int) (int, error) {
 				return i * 2, nil
 			}, chunkflow.WithParallel(4)).
@@ -48,7 +48,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 		defer goleak.VerifyNone(t)
 
 		val, ok, err := chunkflow.
-			NewIo(ctx).Seq(seq.Numbers(0)).
+			New(ctx).Seq(seq.Numbers(0)).
 			FilterCtx(func(_ context.Context, i int) (bool, error) {
 				return i%7 == 0, nil
 			}, chunkflow.WithParallel(4)).
@@ -69,7 +69,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 		done := make(chan error, 1)
 		go func() {
 			_, err := chunkflow.
-				NewIo(cctx).Seq(seq.Numbers(0)).
+				New(cctx).Seq(seq.Numbers(0)).
 				MapCtx(func(ctx context.Context, i int) (int, error) {
 					started.Add(1)
 					return blockUntilCancelled(ctx, i)
@@ -95,7 +95,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 
 		boom := errors.New("boom")
 		_, err := chunkflow.
-			NewIo(ctx).Seq(seq.Numbers(0)).
+			New(ctx).Seq(seq.Numbers(0)).
 			MapCtx(func(ctx context.Context, i int) (int, error) {
 				if i == 3 {
 					return 0, boom
@@ -122,7 +122,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 		}
 
 		_, err := chunkflow.
-			NewIo(ctx).Seq2(src).
+			New(ctx).Seq2(src).
 			MapCtx(blockUntilCancelled[int], chunkflow.WithParallel(4)).
 			Collect()
 
@@ -133,11 +133,11 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 		defer goleak.VerifyNone(t)
 
 		res, err := chunkflow.
-			NewIo(ctx).Seq(seq.Numbers(0)).
+			New(ctx).Seq(seq.Numbers(0)).
 			MapCtx(func(_ context.Context, i int) (int, error) { return i + 1, nil }, chunkflow.WithParallel(3)).
 			FilterCtx(func(_ context.Context, i int) (bool, error) { return i%2 == 0, nil }, chunkflow.WithParallel(2)).
 			Chunk[[]int](5).
-			Through(chunkflow.IoFlatten).
+			Through(chunkflow.Flatten).
 			Take(10).
 			Collect()
 

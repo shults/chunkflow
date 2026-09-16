@@ -8,7 +8,7 @@ import (
 
 // ErrSuppressed marks an error that a CircuitBreaker decided to tolerate.
 // Terminal operations skip elements carrying such an error instead of failing.
-// Use errors.Is(err, ErrSuppressed) to detect one, for example when iterating IoStream.Seq();
+// Use errors.Is(err, ErrSuppressed) to detect one, for example when iterating Stream.Seq();
 // the original error stays in the chain, so errors.Is(err, original) keeps working too.
 var ErrSuppressed = errors.New("suppressed by circuit breaker")
 
@@ -34,7 +34,7 @@ func isSuppressed(err error) bool {
 	return errors.Is(err, ErrSuppressed)
 }
 
-// ErrPanic marks an error produced from a panic inside a user callback of an IoStream
+// ErrPanic marks an error produced from a panic inside a user callback of an Stream
 // (MapCtx, FilterCtx, ForEachCtx, ...). The panic is recovered where it happens, also on
 // worker goroutines, and travels down the pipeline as an error element that nothing may
 // suppress: CircuitBreaker passes it through and every terminal returns it. The message
@@ -65,14 +65,19 @@ func isPanic(err error) bool {
 	return errors.Is(err, ErrPanic)
 }
 
-// recovered calls fn and turns a panic into an ErrPanic error, capturing the stack of the
-// current goroutine at the point of the panic.
-func recovered[R any](fn func() (R, error)) (res R, err error) {
-	defer func() {
-		if v := recover(); v != nil {
-			var zero R
-			res, err = zero, &panicError{value: v, stack: debug.Stack()}
-		}
-	}()
-	return fn()
+// guardPanics turns a panic raised inside a user callback into an ErrPanic error. It is
+// meant to be deferred once per stage iteration (or once per worker goroutine), not once
+// per element, so the per-element cost is a single bool store. The caller sets *inCallback
+// to true right before invoking the user callback and back to false right after; a panic
+// caught while it is false did not come from the callback (typically the downstream
+// consumer panicked inside yield) and is re-raised untouched.
+func guardPanics(inCallback *bool, report func(error)) {
+	v := recover()
+	if v == nil {
+		return
+	}
+	if !*inCallback {
+		panic(v)
+	}
+	report(&panicError{value: v, stack: debug.Stack()})
 }

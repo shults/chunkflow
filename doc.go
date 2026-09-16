@@ -1,34 +1,30 @@
 // Package chunkflow provides lazily evaluated, type-safe data pipelines on top of
-// Go's native iterators (iter.Seq). It targets stream processing and chunked I/O
-// work (ETL-style batching) and comes in two flavours that share one fluent API:
-//
-//   - Stream[T] is synchronous and infallible. Every intermediate operation is a
-//     closure over the upstream iterator, nothing is buffered except by Chunk, and
-//     nothing runs until a terminal operation pulls.
-//   - IoStream[T] adds a context.Context, error propagation and optional worker
-//     pools. Every Stream method exists on IoStream with the same name and shape;
-//     terminal operations additionally return an error, and callbacks that need
-//     the context or may fail have an *Ctx counterpart (MapCtx, FilterCtx,
-//     ReduceCtx, AllCtx, AnyCtx, ForEachCtx).
+// Go's native iterators (iter.Seq), aimed at stream processing and chunked I/O work
+// (ETL-style batching). One type, Stream[T], carries a context.Context, propagates
+// errors as elements and can run steps on worker pools. Every intermediate operation
+// is a closure over the upstream iterator, nothing is buffered except by Chunk, and
+// nothing runs until a terminal operation pulls. Callbacks that need the context or may
+// fail have a *Ctx variant (MapCtx, FilterCtx, ReduceCtx, AllCtx, AnyCtx, ForEachCtx);
+// the plain variant is that *Ctx variant pinned to one worker.
 //
 // # Constructing streams
 //
-// Both types are built from native iterators only. Generators live in the
+// Streams are built from native iterators only. Generators live in the
 // sub-package seq (Items, Range, RangeInclusive, Numbers, Const, Repeat, Iterate) so that they are
 // equally usable with slices.Collect, range loops and this package:
 //
-//	evens := chunkflow.NewStream(seq.Range(0, 100)).
+//	evens, err := chunkflow.New(ctx).Seq(seq.Range(0, 100)).
 //		Filter(func(i int) bool { return i%2 == 0 }).
 //		Collect()
 //
-//	rows, err := chunkflow.NewIo(ctx, chunkflow.WithParallel(8)).Seq(seq.Items(ids...)).
+//	rows, err := chunkflow.New(ctx, chunkflow.WithParallel(8)).Seq(seq.Items(ids...)).
 //		MapCtx(fetchRow).
 //		Chunk[[]Row](500).
 //		ForEachCtx(insertBatch)
 //
-// IoStream is built through NewIo(ctx, opts...), which binds the context and default
-// options first and lets the source pick the element type: Seq wraps an iter.Seq,
-// Seq2 an iter.Seq2[T, error] (the inverse of IoStream.Seq), Chan a receive channel.
+// New(ctx, opts...) binds the context and default options first and lets the source
+// pick the element type: Seq wraps an iter.Seq, Seq2 an iter.Seq2[T, error] (the inverse
+// of Stream.Seq), Chan a receive channel.
 //
 // # Type-changing operations
 //
@@ -37,13 +33,12 @@
 // Through keeps the left-to-right reading order when using them:
 //
 //	stream.Chunk[[]int](3).Through(chunkflow.Flatten)
-//	ioStream.Chunk[[]int](3).Through(chunkflow.IoFlatten)
 //
-// # Errors in IoStream
+// # Errors
 //
 // An error, whether produced by the source or by a callback, travels down the
 // pipeline as an element. Intermediate operations never interpret it: Map, Filter,
-// Take, Skip, Chunk and IoFlatten forward it untouched and keep working on the
+// Take, Skip, Chunk and Flatten forward it untouched and keep working on the
 // values around it, so Take(n) and Skip(n) count values only. Terminal operations
 // stop at the first error they see, which makes a plain pipeline fail fast and
 // stop consuming the source right after the failing element.
@@ -62,7 +57,7 @@
 //
 // Every operation honours the yield protocol: when a consumer stops (Take, First,
 // Any, All, or a plain break in a range loop), the whole chain stops pulling from
-// the source. In IoStream a consumer stopping, or the context being cancelled,
+// the source. In Stream a consumer stopping, or the context being cancelled,
 // also shuts down any worker pool spawned by MapCtx or FilterCtx; the
 // cancellation itself is reported as an error by the terminal operation.
 //
@@ -70,7 +65,7 @@
 //
 // Two kinds exist. A StepOption configures one *Ctx call: WithParallel(n) sets the
 // worker count of MapCtx, FilterCtx or TapCtx (default 1; with n > 1 the output order of
-// that step is not guaranteed). An Option configures the whole pipeline through NewIo or
+// that step is not guaranteed). An Option configures the whole pipeline through New or
 // Opts and is inherited downstream: every StepOption also works as an Option (a default
 // worker count), and WithOnError(fn) registers the hook that terminal operations call for
 // every error they handle, suppressed ones included, so logging and metrics need no
