@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"log/slog"
 	"slices"
 	"sync"
 )
@@ -27,25 +26,48 @@ type IoStream[T any] struct {
 }
 
 // Option configures an IoStream or a single asynchronous operation.
-type Option func(*options)
+// Option configures a whole pipeline. Pass it to NewIo or Opts; every operation
+// downstream inherits it. Every StepOption is also an Option.
+type Option interface {
+	applyPipeline(*options)
+}
 
-// WithParallel sets the number of concurrent workers used by *Ctx operations.
-func WithParallel(concurrency int) Option {
+// StepOption configures a single *Ctx call, e.g. MapCtx(fn, WithParallel(8)). Passing it
+// to NewIo or Opts instead makes it the default for the whole pipeline.
+type StepOption func(*options)
+
+func (f StepOption) applyPipeline(o *options) { f(o) }
+
+// pipelineOption is an Option that makes no sense for a single step.
+type pipelineOption func(*options)
+
+func (f pipelineOption) applyPipeline(o *options) { f(o) }
+
+// WithParallel sets the number of concurrent workers used by MapCtx, FilterCtx and TapCtx.
+// With n > 1 the output order of that step is not guaranteed. A value below 1 is invalid:
+// the stream it is applied to emits a single error and ends.
+func WithParallel(concurrency int) StepOption {
 	return func(o *options) {
+		if concurrency < 1 {
+			o.err = fmt.Errorf("chunkflow: WithParallel(%d): concurrency must be at least 1", concurrency)
+			return
+		}
 		o.concurrency = concurrency
 	}
 }
 
-// WithLogger sets the logger used for diagnostics. Diagnostics are discarded by default.
-func WithLogger(logger *slog.Logger) Option {
-	return func(o *options) {
-		o.logger = logger
-	}
-}
-
-// WithDiscardLogger drops all diagnostics. Handy to silence a logger previously set via Opts.
-func WithDiscardLogger() Option {
-	return WithLogger(slog.New(slog.DiscardHandler))
+// WithOnError registers a callback that terminal operations invoke for every error they
+// handle: errors marked ErrSuppressed just before skipping them, and the fatal error just
+// before returning it. It is the hook for logging or metrics; it cannot alter the outcome.
+// A nil callback is invalid: the stream it is applied to emits a single error and ends.
+func WithOnError(fn func(error)) Option {
+	return pipelineOption(func(o *options) {
+		if fn == nil {
+			o.err = errors.New("chunkflow: WithOnError: nil callback")
+			return
+		}
+		o.onError = fn
+	})
 }
 
 // IoBuilder binds a context and default options before the element type is known.
@@ -62,8 +84,8 @@ type IoBuilder struct {
 //	chunkflow.NewIo(ctx, chunkflow.WithParallel(8)).Chan(jobs).MapCtx(process).Exec()
 func NewIo(ctx context.Context, opts ...Option) IoBuilder {
 	o := defaultOptions()
-	for _, apply := range opts {
-		apply(&o)
+	for _, opt := range opts {
+		opt.applyPipeline(&o)
 	}
 	return IoBuilder{options: o, ctx: ctx}
 }
@@ -124,7 +146,12 @@ func (b IoBuilder) Chan[T any](ch <-chan T) IoStream[T] {
 // Opts returns a copy of the stream with the given options applied as defaults
 // for all subsequent operations.
 func (s IoStream[T]) Opts(opts ...Option) IoStream[T] {
-	s.options = s.getOptions(opts...)
+	for _, opt := range opts {
+		opt.applyPipeline(&s.options)
+	}
+	if s.options.err != nil {
+		return s.errStream[T](s.options.err)
+	}
 	return s
 }
 
@@ -138,10 +165,10 @@ func (s IoStream[T]) Map[R any](mapFn func(T) R) IoStream[R] {
 // MapCtx transforms each element using a context-aware function that may fail.
 // With WithParallel(n > 1) elements are processed by n workers and the output order
 // is not guaranteed. The first error terminates the stream.
-func (s IoStream[T]) MapCtx[R any](mapFn func(ctx context.Context, item T) (R, error), opts ...Option) IoStream[R] {
+func (s IoStream[T]) MapCtx[R any](mapFn func(ctx context.Context, item T) (R, error), opts ...StepOption) IoStream[R] {
 	o := s.getOptions(opts...)
-	if o.concurrency < 1 {
-		return s.errStream[R](fmt.Errorf("concurrency must be at least 1"))
+	if o.err != nil {
+		return s.errStream[R](o.err)
 	}
 
 	if o.concurrency > 1 {
@@ -177,7 +204,7 @@ func (s IoStream[T]) Tap(fn func(T)) IoStream[T] {
 // unchanged. An error returned by fn replaces the value with that error in the
 // stream. With WithParallel(n > 1) fn runs on n workers and the output order is not
 // guaranteed, exactly as for MapCtx.
-func (s IoStream[T]) TapCtx(fn func(ctx context.Context, item T) error, opts ...Option) IoStream[T] {
+func (s IoStream[T]) TapCtx(fn func(ctx context.Context, item T) error, opts ...StepOption) IoStream[T] {
 	return s.MapCtx(func(ctx context.Context, item T) (T, error) {
 		return item, fn(ctx, item)
 	}, opts...)
@@ -193,10 +220,10 @@ func (s IoStream[T]) Filter(predicate func(T) bool) IoStream[T] {
 // FilterCtx emits only the elements for which the context-aware predicate returns true.
 // With WithParallel(n > 1) predicates are evaluated by n workers and the output order
 // is not guaranteed. The first error terminates the stream.
-func (s IoStream[T]) FilterCtx(predicate func(ctx context.Context, item T) (bool, error), opts ...Option) IoStream[T] {
+func (s IoStream[T]) FilterCtx(predicate func(ctx context.Context, item T) (bool, error), opts ...StepOption) IoStream[T] {
 	o := s.getOptions(opts...)
-	if o.concurrency < 1 {
-		return s.errStream[T](fmt.Errorf("concurrency must be at least 1"))
+	if o.err != nil {
+		return s.errStream[T](o.err)
 	}
 
 	if o.concurrency == 1 {
@@ -553,14 +580,9 @@ func (s IoStream[T]) Reduce[R any](init R, fn func(acc R, item T) R) (R, error) 
 }
 
 // ReduceCtx is Reduce with a context-aware fn that may fail; a returned error stops the
-// fold and is returned with the accumulator built so far. Reduction is always sequential;
-// WithParallel is accepted for API symmetry and logged.
-func (s IoStream[T]) ReduceCtx[R any](init R, fn func(ctx context.Context, acc R, item T) (R, error), opts ...Option) (R, error) {
-	o := s.getOptions(opts...)
-	if o.concurrency > 1 {
-		o.logger.Warn("ReduceCtx called with concurrency > 1; concurrent reduction is not supported, falling back to sequential reduction")
-	}
-
+// fold and is returned with the accumulator built so far. A fold is sequential by nature,
+// so unlike MapCtx it takes no StepOption.
+func (s IoStream[T]) ReduceCtx[R any](init R, fn func(ctx context.Context, acc R, item T) (R, error)) (R, error) {
 	acc := init
 	err := s.each(func(item T) (bool, error) {
 		var err error
@@ -763,15 +785,18 @@ type result[T any] struct {
 	err   error
 }
 
+// options holds pipeline settings. err records an invalid option value; the first
+// operation that consumes the options turns it into a stream emitting that error.
 type options struct {
 	concurrency int
-	logger      *slog.Logger
+	onError     func(error)
+	err         error
 }
 
 func defaultOptions() options {
 	return options{
 		concurrency: 1,
-		logger:      slog.New(slog.DiscardHandler),
+		onError:     func(error) {},
 	}
 }
 
@@ -813,7 +838,7 @@ func emptyIoStream[T any]() IoStream[T] {
 	}
 }
 
-func (s IoStream[T]) getOptions(opts ...Option) options {
+func (s IoStream[T]) getOptions(opts ...StepOption) options {
 	o := s.options
 	for _, apply := range opts {
 		apply(&o)
@@ -833,11 +858,13 @@ func (s IoStream[T]) errStream[R any](err error) IoStream[R] {
 	})
 }
 
-// each drives every terminal operation: it skips elements carrying a suppressed error,
-// returns the first other error, and stops early when fn returns false.
+// each drives every terminal operation: it reports every error to the OnError hook,
+// skips elements carrying a suppressed error, returns the first other error, and stops
+// early when fn returns false.
 func (s IoStream[T]) each(fn func(T) (bool, error)) error {
 	for item := range s.seq {
 		if item.err != nil {
+			s.options.onError(item.err)
 			if isSuppressed(item.err) {
 				continue
 			}
@@ -845,6 +872,7 @@ func (s IoStream[T]) each(fn func(T) (bool, error)) error {
 		}
 		next, err := fn(item.value)
 		if err != nil {
+			s.options.onError(err)
 			return err
 		}
 		if !next {
@@ -854,8 +882,12 @@ func (s IoStream[T]) each(fn func(T) (bool, error)) error {
 	return nil
 }
 
-// stream assembles an IoStream from the builder's context and options.
+// stream assembles an IoStream from the builder's context and options. An invalid option
+// given to NewIo surfaces here as a stream emitting that error.
 func (b IoBuilder) stream[T any](seq iter.Seq[result[T]]) IoStream[T] {
+	if b.options.err != nil {
+		seq = func(yield func(result[T]) bool) { yield(result[T]{err: b.options.err}) }
+	}
 	return IoStream[T]{options: b.options, ctx: b.ctx, seq: seq}
 }
 

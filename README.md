@@ -109,12 +109,15 @@ Every method below exists with the same name and shape on both `Stream[T]` and `
 
 | Method | Signature | Description |
 | --- | --- | --- |
-| `MapCtx` | `MapCtx[R](func(ctx, T) (R, error), ...Option)` | Like `Map`, but may fail and run on `WithParallel(n)` workers (order not preserved for n > 1). |
-| `FilterCtx` | `FilterCtx(func(ctx, T) (bool, error), ...Option)` | Like `Filter`, with the same error and concurrency semantics as `MapCtx`. |
-| `TapCtx` | `TapCtx(func(ctx, T) error, ...Option)` | Like `Tap`; a returned error replaces the element. Same concurrency semantics as `MapCtx`. |
+| `MapCtx` | `MapCtx[R](func(ctx, T) (R, error), ...StepOption)` | Like `Map`, but may fail and run on `WithParallel(n)` workers (order not preserved for n > 1). |
+| `FilterCtx` | `FilterCtx(func(ctx, T) (bool, error), ...StepOption)` | Like `Filter`, with the same error and concurrency semantics as `MapCtx`. |
+| `TapCtx` | `TapCtx(func(ctx, T) error, ...StepOption)` | Like `Tap`; a returned error replaces the element. Same concurrency semantics as `MapCtx`. |
 | `TakeWhileCtx` / `SkipWhileCtx` | `(func(ctx, T) (bool, error))` | Context-aware predicates; always sequential. Errors in the stream pass through unevaluated. |
 | `CircuitBreaker` | `CircuitBreaker(maxConsecutiveFailures int)` | Tolerates up to `n-1` errors in a row by re-emitting them marked as `ErrSuppressed`; trips on the `n`-th. Context errors are never suppressed. |
-| `Opts` | `Opts(...Option)` | Sets default options (`WithParallel`, `WithLogger`, `WithDiscardLogger`) inherited by all downstream operations. |
+| `Opts` | `Opts(...Option)` | Sets pipeline options inherited by all downstream operations: `WithParallel(n)` as the default worker count, `WithOnError(fn)` as the hook terminals call for every error they handle (suppressed ones before skipping, the fatal one before returning). |
+
+`WithParallel` is a `StepOption` and may also be passed to a single `MapCtx` / `FilterCtx` / `TapCtx` call;
+`WithOnError` is pipeline-only, so passing it to a step does not compile. `ReduceCtx` takes no options: a fold is sequential.
 
 #### Error semantics in `IoStream`
 

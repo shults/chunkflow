@@ -1,10 +1,8 @@
 package chunkflow_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"sync/atomic"
 	"testing"
 
@@ -143,27 +141,17 @@ func TestIoStream_ReduceCtx(t *testing.T) {
 		assert.Equal(t, 6, total, "1+2+3 accumulated before the failure")
 	})
 
-	t.Run("concurrency above 1 warns and reduces sequentially", func(t *testing.T) {
-		var buf bytes.Buffer
+	t.Run("folds sequentially in source order", func(t *testing.T) {
 		var order []int
-		total, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).
-			ReduceCtx(0, func(_ context.Context, acc, item int) (int, error) {
+		total, err := chunkflow.NewIo(ctx, chunkflow.WithParallel(8)). // pipeline default must not leak into the fold
+										Seq(seq.Range(0, 5)).
+										ReduceCtx(0, func(_ context.Context, acc, item int) (int, error) {
 				order = append(order, item)
 				return acc + item, nil
-			}, chunkflow.WithParallel(8), chunkflow.WithLogger(slog.New(slog.NewTextHandler(&buf, nil))))
+			})
 		require.NoError(t, err)
 		assert.Equal(t, 10, total)
-		assert.Equal(t, []int{0, 1, 2, 3, 4}, order, "must stay sequential and ordered")
-		assert.Contains(t, buf.String(), "concurrent reduction is not supported")
-	})
-
-	t.Run("concurrency of 1 does not warn", func(t *testing.T) {
-		var buf bytes.Buffer
-		_, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).
-			Opts(chunkflow.WithLogger(slog.New(slog.NewTextHandler(&buf, nil)))).
-			ReduceCtx(0, func(_ context.Context, acc, item int) (int, error) { return acc + item, nil })
-		require.NoError(t, err)
-		assert.Empty(t, buf.String())
+		assert.Equal(t, []int{0, 1, 2, 3, 4}, order)
 	})
 }
 
@@ -215,7 +203,7 @@ func TestIoStream_PredicateErrors(t *testing.T) {
 	})
 
 	t.Run("FilterCtx predicate error can be tolerated by a breaker", func(t *testing.T) {
-		for name, opts := range map[string][]chunkflow.Option{
+		for name, opts := range map[string][]chunkflow.StepOption{
 			"sequential": nil,
 			"parallel":   {chunkflow.WithParallel(2)},
 		} {

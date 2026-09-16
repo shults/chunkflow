@@ -98,7 +98,11 @@ Goal: fix the shapes that are awkward now, while nobody depends on them.
   - tests: order preserved under random per-item delays; window bound respected (source pulls never
     exceed emitted + k); leak-free on short-circuit and cancellation (goleak); `Take(1)` after an
     ordered stage stops the pool
-- [ ] decide the fate of `WithLogger`: remove it, or give it real work (worker start/stop, breaker trips)
+- [x] decide the fate of `WithLogger`: removed together with `WithDiscardLogger` and the `slog`
+      dependency. Its only job was a warning that `ReduceCtx` ignores `WithParallel`; `ReduceCtx` now
+      takes no options at all. Replaced by `WithOnError(fn)` — a pipeline `Option` that terminals call
+      for every error they handle (suppressed and fatal). Options split into `Option` (pipeline) and
+      `StepOption` (one `*Ctx` call, `WithParallel`) so a misplaced option is a compile error
 - [ ] document (or unify) `Stream.Chunk` panicking vs `IoStream.Chunk` emitting an error on invalid size
 - [ ] tag `v0.1.0`
 

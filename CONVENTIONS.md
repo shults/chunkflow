@@ -53,9 +53,21 @@ new convention is introduced or an old one is changed; a convention without a re
   a second error policy shows up; `Zip3` is not added until someone needs it; there is no `Distinct`
   because a global "seen" set belongs to the user's store, not inside the pipeline
   (see `ExampleIoStream_Chunk_deduplication`).
-- **Options are shared, not generic.** `Option` configures concurrency and logging for a whole
-  pipeline (`NewIo(ctx, opts...)`, `Opts`) or one call (`MapCtx(fn, opts...)`). Anything typed by the
-  element (`Reduce`'s init value) is a positional parameter, never an option.
+- **Two option kinds, checked by the compiler.** `Option` configures a whole pipeline (`NewIo`,
+  `Opts`) and is inherited downstream; `StepOption` configures one `*Ctx` call and is also an
+  `Option`. `WithParallel` is a `StepOption`, `WithOnError` a pipeline-only `Option`, so
+  `MapCtx(fn, WithOnError(...))` and `ReduceCtx(init, fn, WithParallel(4))` do not compile.
+  *Why:* an accepted-but-ignored option is a silent bug; the earlier single `Option` type needed a
+  logged warning for exactly that case, and the logger existed for nothing else.
+- **Invalid option values are not panics and not nil checks.** `WithParallel(0)` or
+  `WithOnError(nil)` record an error in the options; the first operation that consumes them
+  (`Opts`, the builder's source method, a `*Ctx` step) emits that error and ends. Defaults are
+  real values (`onError` is a no-op func), so hot paths never test for nil.
+- **No logger in the API.** Observability of tolerated errors goes through `WithOnError` (or a
+  manual loop over `Seq()`), never through a library-owned `slog.Logger`. *Why:* the library has
+  nothing to say on its own; the user decides whether an error becomes a log line or a metric.
+- **Options are never typed by the element.** Anything that depends on `T` (`Reduce`'s init value)
+  is a positional parameter; `options` stays a plain struct shared by every pipeline.
 - **Positional parameters before closures.** `Reduce(init, fn)`, not `Reduce(fn, init)`: a value
   trailing a multi-line func literal reads badly.
 - **Fold callbacks take `(acc, item)`**, as in `slices.Reduce` (x/exp), `lo.Reduce` and most

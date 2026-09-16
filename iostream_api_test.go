@@ -1,10 +1,8 @@
 package chunkflow_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -255,24 +253,68 @@ func TestIoStream_Options(t *testing.T) {
 		assert.False(t, timedOut.Load(), "not all workers ran concurrently; options were not inherited")
 	})
 
-	t.Run("WithDiscardLogger silences a logger set via Opts", func(t *testing.T) {
-		var buf bytes.Buffer
-		logger := slog.New(slog.NewTextHandler(&buf, nil))
+	t.Run("WithOnError sees suppressed errors and the fatal one, in order", func(t *testing.T) {
+		var seen []error
+		res, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).
+			Opts(chunkflow.WithOnError(func(err error) { seen = append(seen, err) })).
+			MapCtx(failing). // 2,3,4 fail
+			CircuitBreaker(3).
+			Collect()
 
-		// ReduceCtx warns when asked for concurrency > 1
-		_, err := chunkflow.NewIo(ctx).Seq(seq.Items(1, 2)).
-			Opts(chunkflow.WithLogger(logger)).
-			ReduceCtx(0, func(_ context.Context, acc, item int) (int, error) { return acc + item, nil }, chunkflow.WithParallel(2))
-		require.NoError(t, err)
-		assert.Contains(t, buf.String(), "level=WARN")
+		require.ErrorIs(t, err, errBoom)
+		assert.Equal(t, []int{0, 1}, res)
+		require.Len(t, seen, 3, "two suppressed + the tripping error")
+		require.ErrorIs(t, seen[0], chunkflow.ErrSuppressed)
+		require.ErrorIs(t, seen[1], chunkflow.ErrSuppressed)
+		require.NotErrorIs(t, seen[2], chunkflow.ErrSuppressed)
+		assert.Same(t, err, seen[2], "the last reported error is the one returned")
+	})
 
-		buf.Reset()
-		_, err = chunkflow.NewIo(ctx).Seq(seq.Items(1, 2)).
-			Opts(chunkflow.WithLogger(logger)).
-			ReduceCtx(0, func(_ context.Context, acc, item int) (int, error) { return acc + item, nil },
-				chunkflow.WithParallel(2), chunkflow.WithDiscardLogger())
+	t.Run("WithOnError sees terminal callback errors too", func(t *testing.T) {
+		errCb := errors.New("callback")
+		var seen []error
+		err := chunkflow.NewIo(ctx, chunkflow.WithOnError(func(err error) { seen = append(seen, err) })).
+			Seq(seq.Items(1, 2)).
+			ForEachCtx(func(context.Context, int) error { return errCb })
+		require.ErrorIs(t, err, errCb)
+		assert.Equal(t, []error{errCb}, seen)
+	})
+
+	t.Run("WithOnError is inherited through derived streams", func(t *testing.T) {
+		calls := 0
+		_, err := chunkflow.NewIo(ctx, chunkflow.WithOnError(func(error) { calls++ })).Seq(seq.Range(0, 5)).
+			MapCtx(failing). // 2,3,4 fail
+			CircuitBreaker(100).
+			Skip(0).
+			Collect()
 		require.NoError(t, err)
-		assert.Empty(t, buf.String())
+		assert.Equal(t, 3, calls)
+	})
+
+	t.Run("invalid options become an error stream wherever they are applied", func(t *testing.T) {
+		src := func() chunkflow.IoStream[int] { return chunkflow.NewIo(ctx).Seq(seq.Items(1, 2, 3)) }
+
+		_, err := src().Opts(chunkflow.WithOnError(nil)).Collect()
+		require.ErrorContains(t, err, "WithOnError: nil callback")
+
+		_, err = chunkflow.NewIo(ctx, chunkflow.WithOnError(nil)).Seq(seq.Items(1)).Collect()
+		require.ErrorContains(t, err, "WithOnError: nil callback")
+
+		_, err = chunkflow.NewIo(ctx, chunkflow.WithParallel(0)).Chan(make(chan int)).Collect()
+		require.ErrorContains(t, err, "concurrency must be at least 1", "reported even though the channel would block")
+
+		_, err = src().Opts(chunkflow.WithParallel(-1)).Collect()
+		require.ErrorContains(t, err, "WithParallel(-1)")
+
+		res, err := src().Opts(chunkflow.WithParallel(2)).Collect()
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []int{1, 2, 3}, res)
+	})
+
+	t.Run("WithParallel is both a step and a pipeline option", func(t *testing.T) {
+		step := chunkflow.WithParallel(2)
+		var pipeline chunkflow.Option = step // compiles: every StepOption is an Option
+		assert.NotNil(t, pipeline)
 	})
 
 	t.Run("FilterCtx rejects concurrency below 1", func(t *testing.T) {
