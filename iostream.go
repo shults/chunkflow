@@ -12,7 +12,7 @@ import (
 
 // IoStream represents a lazily evaluated, context-aware pipeline whose elements may
 // carry errors. It mirrors the Stream API; every method that accepts a user callback
-// has an *Async counterpart that receives a context and may return an error.
+// has an *Ctx counterpart that receives a context and may return an error.
 //
 // Error semantics: an error produced by the source or by a callback travels down the
 // pipeline as an element. Intermediate operations pass it through untouched and keep
@@ -29,7 +29,7 @@ type IoStream[T any] struct {
 // Option configures an IoStream or a single asynchronous operation.
 type Option func(*options)
 
-// WithParallel sets the number of concurrent workers used by *Async operations.
+// WithParallel sets the number of concurrent workers used by *Ctx operations.
 func WithParallel(concurrency int) Option {
 	return func(o *options) {
 		o.concurrency = concurrency
@@ -59,7 +59,7 @@ type IoBuilder struct {
 // NewIo starts building an IoStream bound to ctx. The options become the defaults of
 // every operation in the resulting pipeline (see Opts):
 //
-//	chunkflow.NewIo(ctx, chunkflow.WithParallel(8)).Chan(jobs).MapAsync(process).Exec()
+//	chunkflow.NewIo(ctx, chunkflow.WithParallel(8)).Chan(jobs).MapCtx(process).Exec()
 func NewIo(ctx context.Context, opts ...Option) IoBuilder {
 	o := defaultOptions()
 	for _, apply := range opts {
@@ -130,22 +130,22 @@ func (s IoStream[T]) Opts(opts ...Option) IoStream[T] {
 
 // Map transforms each element of the stream using the provided function.
 func (s IoStream[T]) Map[R any](mapFn func(T) R) IoStream[R] {
-	return s.MapAsync(func(_ context.Context, item T) (R, error) {
+	return s.MapCtx(func(_ context.Context, item T) (R, error) {
 		return mapFn(item), nil
 	}, WithParallel(1))
 }
 
-// MapAsync transforms each element using a context-aware function that may fail.
+// MapCtx transforms each element using a context-aware function that may fail.
 // With WithParallel(n > 1) elements are processed by n workers and the output order
 // is not guaranteed. The first error terminates the stream.
-func (s IoStream[T]) MapAsync[R any](mapFn func(ctx context.Context, item T) (R, error), opts ...Option) IoStream[R] {
+func (s IoStream[T]) MapCtx[R any](mapFn func(ctx context.Context, item T) (R, error), opts ...Option) IoStream[R] {
 	o := s.getOptions(opts...)
 	if o.concurrency < 1 {
 		return s.errStream[R](fmt.Errorf("concurrency must be at least 1"))
 	}
 
 	if o.concurrency > 1 {
-		return s.derive(s.mapAsyncConcurrent(mapFn, o.concurrency))
+		return s.derive(s.mapCtxConcurrent(mapFn, o.concurrency))
 	}
 
 	return s.derive(func(yield func(result[R]) bool) {
@@ -167,33 +167,33 @@ func (s IoStream[T]) MapAsync[R any](mapFn func(ctx context.Context, item T) (R,
 // Tap invokes fn for every value and passes it through unchanged. Errors flow past
 // untouched; fn never sees them. Meant for side effects such as logging or metrics.
 func (s IoStream[T]) Tap(fn func(T)) IoStream[T] {
-	return s.TapAsync(func(_ context.Context, item T) error {
+	return s.TapCtx(func(_ context.Context, item T) error {
 		fn(item)
 		return nil
 	}, WithParallel(1))
 }
 
-// TapAsync invokes a context-aware fn for every value and passes the value through
+// TapCtx invokes a context-aware fn for every value and passes the value through
 // unchanged. An error returned by fn replaces the value with that error in the
 // stream. With WithParallel(n > 1) fn runs on n workers and the output order is not
-// guaranteed, exactly as for MapAsync.
-func (s IoStream[T]) TapAsync(fn func(ctx context.Context, item T) error, opts ...Option) IoStream[T] {
-	return s.MapAsync(func(ctx context.Context, item T) (T, error) {
+// guaranteed, exactly as for MapCtx.
+func (s IoStream[T]) TapCtx(fn func(ctx context.Context, item T) error, opts ...Option) IoStream[T] {
+	return s.MapCtx(func(ctx context.Context, item T) (T, error) {
 		return item, fn(ctx, item)
 	}, opts...)
 }
 
 // Filter emits only the elements for which the predicate returns true.
 func (s IoStream[T]) Filter(predicate func(T) bool) IoStream[T] {
-	return s.FilterAsync(func(_ context.Context, item T) (bool, error) {
+	return s.FilterCtx(func(_ context.Context, item T) (bool, error) {
 		return predicate(item), nil
 	}, WithParallel(1))
 }
 
-// FilterAsync emits only the elements for which the context-aware predicate returns true.
+// FilterCtx emits only the elements for which the context-aware predicate returns true.
 // With WithParallel(n > 1) predicates are evaluated by n workers and the output order
 // is not guaranteed. The first error terminates the stream.
-func (s IoStream[T]) FilterAsync(predicate func(ctx context.Context, item T) (bool, error), opts ...Option) IoStream[T] {
+func (s IoStream[T]) FilterCtx(predicate func(ctx context.Context, item T) (bool, error), opts ...Option) IoStream[T] {
 	o := s.getOptions(opts...)
 	if o.concurrency < 1 {
 		return s.errStream[T](fmt.Errorf("concurrency must be at least 1"))
@@ -230,7 +230,7 @@ func (s IoStream[T]) FilterAsync(predicate func(ctx context.Context, item T) (bo
 	// Evaluate the predicate on the worker pool, then drop the non-matching values.
 	// The pool yields a bare sequence rather than an IoStream[filtered]: instantiating
 	// IoStream with a local type that depends on T would form a generic instantiation cycle.
-	inner := s.mapAsyncConcurrent(func(ctx context.Context, item T) (filtered, error) {
+	inner := s.mapCtxConcurrent(func(ctx context.Context, item T) (filtered, error) {
 		match, err := predicate(ctx, item)
 		return filtered{val: item, match: match}, err
 	}, o.concurrency)
@@ -300,15 +300,15 @@ func (s IoStream[T]) Skip(nr int) IoStream[T] {
 // the first value for which it returns false; nothing further is pulled from the source.
 // Errors are passed through and are not evaluated by the predicate.
 func (s IoStream[T]) TakeWhile(predicate func(T) bool) IoStream[T] {
-	return s.TakeWhileAsync(func(_ context.Context, item T) (bool, error) {
+	return s.TakeWhileCtx(func(_ context.Context, item T) (bool, error) {
 		return predicate(item), nil
 	})
 }
 
-// TakeWhileAsync is TakeWhile with a context-aware predicate. A predicate error is
+// TakeWhileCtx is TakeWhile with a context-aware predicate. A predicate error is
 // emitted as an error element; the stream continues and the predicate keeps being
 // evaluated on subsequent values, so a downstream CircuitBreaker can tolerate it.
-func (s IoStream[T]) TakeWhileAsync(predicate func(ctx context.Context, item T) (bool, error)) IoStream[T] {
+func (s IoStream[T]) TakeWhileCtx(predicate func(ctx context.Context, item T) (bool, error)) IoStream[T] {
 	return s.derive(func(yield func(result[T]) bool) {
 		for item := range s.seq {
 			if item.err != nil {
@@ -335,15 +335,15 @@ func (s IoStream[T]) TakeWhileAsync(predicate func(ctx context.Context, item T) 
 // remaining element without evaluating the predicate again.
 // Errors are passed through and are not evaluated by the predicate.
 func (s IoStream[T]) SkipWhile(predicate func(T) bool) IoStream[T] {
-	return s.SkipWhileAsync(func(_ context.Context, item T) (bool, error) {
+	return s.SkipWhileCtx(func(_ context.Context, item T) (bool, error) {
 		return predicate(item), nil
 	})
 }
 
-// SkipWhileAsync is SkipWhile with a context-aware predicate. A predicate error is
+// SkipWhileCtx is SkipWhile with a context-aware predicate. A predicate error is
 // emitted as an error element; the stream continues and the predicate keeps being
 // evaluated on subsequent values.
-func (s IoStream[T]) SkipWhileAsync(predicate func(ctx context.Context, item T) (bool, error)) IoStream[T] {
+func (s IoStream[T]) SkipWhileCtx(predicate func(ctx context.Context, item T) (bool, error)) IoStream[T] {
 	return s.derive(func(yield func(result[T]) bool) {
 		skipping := true
 		for item := range s.seq {
@@ -514,14 +514,14 @@ func (s IoStream[T]) Collect() ([]T, error) {
 
 // ForEach executes a side effect for each element and returns the first error.
 func (s IoStream[T]) ForEach(fn func(T)) error {
-	return s.ForEachAsync(func(_ context.Context, item T) error {
+	return s.ForEachCtx(func(_ context.Context, item T) error {
 		fn(item)
 		return nil
 	})
 }
 
-// ForEachAsync executes a context-aware side effect for each element and returns the first error.
-func (s IoStream[T]) ForEachAsync(fn func(ctx context.Context, item T) error) error {
+// ForEachCtx executes a context-aware side effect for each element and returns the first error.
+func (s IoStream[T]) ForEachCtx(fn func(ctx context.Context, item T) error) error {
 	return s.each(func(item T) (bool, error) {
 		return true, fn(s.ctx, item)
 	})
@@ -544,17 +544,17 @@ func (s IoStream[T]) Exec() error {
 
 // Reduce aggregates the stream into a single value.
 func (s IoStream[T]) Reduce(init T, fn func(item, acc T) T) (T, error) {
-	return s.ReduceAsync(init, func(_ context.Context, item, acc T) (T, error) {
+	return s.ReduceCtx(init, func(_ context.Context, item, acc T) (T, error) {
 		return fn(item, acc), nil
 	})
 }
 
-// ReduceAsync aggregates the stream into a single value using a context-aware function.
+// ReduceCtx aggregates the stream into a single value using a context-aware function.
 // Reduction is always sequential; WithParallel is accepted for API symmetry and logged.
-func (s IoStream[T]) ReduceAsync(init T, fn func(ctx context.Context, item, acc T) (T, error), opts ...Option) (T, error) {
+func (s IoStream[T]) ReduceCtx(init T, fn func(ctx context.Context, item, acc T) (T, error), opts ...Option) (T, error) {
 	o := s.getOptions(opts...)
 	if o.concurrency > 1 {
-		o.logger.Warn("ReduceAsync called with concurrency > 1; concurrent reduction is not supported, falling back to sequential reduction")
+		o.logger.Warn("ReduceCtx called with concurrency > 1; concurrent reduction is not supported, falling back to sequential reduction")
 	}
 
 	acc := init
@@ -571,13 +571,13 @@ func (s IoStream[T]) ReduceAsync(init T, fn func(ctx context.Context, item, acc 
 // On an empty stream, or one consisting only of suppressed errors, All returns true
 // (vacuous truth): no element could violate the predicate. All(p) == !Any(!p) always holds.
 func (s IoStream[T]) All(predicate func(T) bool) (bool, error) {
-	return s.AllAsync(func(_ context.Context, item T) (bool, error) {
+	return s.AllCtx(func(_ context.Context, item T) (bool, error) {
 		return predicate(item), nil
 	})
 }
 
-// AllAsync verifies whether all elements satisfy the context-aware predicate.
-func (s IoStream[T]) AllAsync(predicate func(ctx context.Context, item T) (bool, error)) (bool, error) {
+// AllCtx verifies whether all elements satisfy the context-aware predicate.
+func (s IoStream[T]) AllCtx(predicate func(ctx context.Context, item T) (bool, error)) (bool, error) {
 	all := true
 	err := s.each(func(item T) (bool, error) {
 		match, err := predicate(s.ctx, item)
@@ -598,13 +598,13 @@ func (s IoStream[T]) AllAsync(predicate func(ctx context.Context, item T) (bool,
 // On an empty stream, or one consisting only of suppressed errors, Any returns false:
 // no element could be a witness.
 func (s IoStream[T]) Any(predicate func(T) bool) (bool, error) {
-	return s.AnyAsync(func(_ context.Context, item T) (bool, error) {
+	return s.AnyCtx(func(_ context.Context, item T) (bool, error) {
 		return predicate(item), nil
 	})
 }
 
-// AnyAsync verifies whether at least one element satisfies the context-aware predicate.
-func (s IoStream[T]) AnyAsync(predicate func(ctx context.Context, item T) (bool, error)) (bool, error) {
+// AnyCtx verifies whether at least one element satisfies the context-aware predicate.
+func (s IoStream[T]) AnyCtx(predicate func(ctx context.Context, item T) (bool, error)) (bool, error) {
 	found := false
 	err := s.each(func(item T) (bool, error) {
 		match, err := predicate(s.ctx, item)
@@ -855,14 +855,14 @@ func (b IoBuilder) stream[T any](seq iter.Seq[result[T]]) IoStream[T] {
 	return IoStream[T]{options: b.options, ctx: b.ctx, seq: seq}
 }
 
-// mapAsyncConcurrent is the WithParallel(n > 1) path of MapAsync and FilterAsync,
+// mapCtxConcurrent is the WithParallel(n > 1) path of MapCtx and FilterCtx,
 // returned as a bare sequence so callers can wrap it in any element type. It wires three kinds
 // of goroutines: a feeder that reads the upstream sequence into inChan (forwarding
 // upstream errors straight to outChan), n workers that apply mapFn and push results to
 // outChan, and a closer that closes outChan once every writer has exited. Every writer
 // is tracked by the WaitGroup so the channel is never closed under a live sender.
 // A consumer stopping early cancels ctx, which releases all of them.
-func (s IoStream[T]) mapAsyncConcurrent[R any](mapFn func(ctx context.Context, item T) (R, error), concurrency int) iter.Seq[result[R]] {
+func (s IoStream[T]) mapCtxConcurrent[R any](mapFn func(ctx context.Context, item T) (R, error), concurrency int) iter.Seq[result[R]] {
 	return func(yield func(result[R]) bool) {
 		ctx, cancel := context.WithCancel(s.ctx)
 		defer cancel()

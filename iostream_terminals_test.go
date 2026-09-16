@@ -99,7 +99,7 @@ func TestIoStream_Reduce(t *testing.T) {
 	})
 }
 
-func TestIoStream_ReduceAsync(t *testing.T) {
+func TestIoStream_ReduceCtx(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("receives the stream context", func(t *testing.T) {
@@ -107,7 +107,7 @@ func TestIoStream_ReduceAsync(t *testing.T) {
 		cctx := context.WithValue(ctx, key{}, 42)
 
 		got, err := chunkflow.NewIo(cctx).Seq(seq.Items(1)).
-			ReduceAsync(0, func(ctx context.Context, _, _ int) (int, error) {
+			ReduceCtx(0, func(ctx context.Context, _, _ int) (int, error) {
 				v, _ := ctx.Value(key{}).(int)
 				return v, nil
 			})
@@ -118,7 +118,7 @@ func TestIoStream_ReduceAsync(t *testing.T) {
 	t.Run("callback error is returned with the accumulator so far", func(t *testing.T) {
 		errCb := errors.New("callback")
 		total, err := chunkflow.NewIo(ctx).Seq(seq.Range(1, 10)).
-			ReduceAsync(0, func(_ context.Context, item, acc int) (int, error) {
+			ReduceCtx(0, func(_ context.Context, item, acc int) (int, error) {
 				if item == 4 {
 					return acc, errCb
 				}
@@ -132,7 +132,7 @@ func TestIoStream_ReduceAsync(t *testing.T) {
 		var buf bytes.Buffer
 		var order []int
 		total, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).
-			ReduceAsync(0, func(_ context.Context, item, acc int) (int, error) {
+			ReduceCtx(0, func(_ context.Context, item, acc int) (int, error) {
 				order = append(order, item)
 				return acc + item, nil
 			}, chunkflow.WithParallel(8), chunkflow.WithLogger(slog.New(slog.NewTextHandler(&buf, nil))))
@@ -146,7 +146,7 @@ func TestIoStream_ReduceAsync(t *testing.T) {
 		var buf bytes.Buffer
 		_, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).
 			Opts(chunkflow.WithLogger(slog.New(slog.NewTextHandler(&buf, nil)))).
-			ReduceAsync(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil })
+			ReduceCtx(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil })
 		require.NoError(t, err)
 		assert.Empty(t, buf.String())
 	})
@@ -164,10 +164,10 @@ func TestIoStream_PredicateErrors(t *testing.T) {
 		}
 	}
 
-	t.Run("AllAsync returns the predicate error", func(t *testing.T) {
+	t.Run("AllCtx returns the predicate error", func(t *testing.T) {
 		var evaluated int
 		ok, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).
-			AllAsync(func(ctx context.Context, i int) (bool, error) {
+			AllCtx(func(ctx context.Context, i int) (bool, error) {
 				evaluated++
 				return failOn(3)(ctx, i)
 			})
@@ -176,9 +176,9 @@ func TestIoStream_PredicateErrors(t *testing.T) {
 		assert.Equal(t, 4, evaluated, "must stop at the failing predicate")
 	})
 
-	t.Run("AnyAsync returns the predicate error", func(t *testing.T) {
+	t.Run("AnyCtx returns the predicate error", func(t *testing.T) {
 		ok, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).
-			AnyAsync(func(ctx context.Context, i int) (bool, error) {
+			AnyCtx(func(ctx context.Context, i int) (bool, error) {
 				match, err := failOn(3)(ctx, i)
 				return !match, err // nothing matches before the failure
 			})
@@ -186,20 +186,20 @@ func TestIoStream_PredicateErrors(t *testing.T) {
 		assert.False(t, ok)
 	})
 
-	t.Run("AllAsync and AnyAsync return upstream errors", func(t *testing.T) {
-		_, err := chunkflow.NewIo(ctx).Seq2(errAfter(2, errBoom)).AllAsync(func(context.Context, int) (bool, error) { return true, nil })
+	t.Run("AllCtx and AnyCtx return upstream errors", func(t *testing.T) {
+		_, err := chunkflow.NewIo(ctx).Seq2(errAfter(2, errBoom)).AllCtx(func(context.Context, int) (bool, error) { return true, nil })
 		require.ErrorIs(t, err, errBoom)
-		_, err = chunkflow.NewIo(ctx).Seq2(errAfter(2, errBoom)).AnyAsync(func(context.Context, int) (bool, error) { return false, nil })
+		_, err = chunkflow.NewIo(ctx).Seq2(errAfter(2, errBoom)).AnyCtx(func(context.Context, int) (bool, error) { return false, nil })
 		require.ErrorIs(t, err, errBoom)
 	})
 
-	t.Run("FilterAsync predicate error is fatal for terminals", func(t *testing.T) {
-		res, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).FilterAsync(failOn(3)).Collect()
+	t.Run("FilterCtx predicate error is fatal for terminals", func(t *testing.T) {
+		res, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).FilterCtx(failOn(3)).Collect()
 		require.ErrorIs(t, err, errPred)
 		assert.Equal(t, []int{0, 1, 2}, res)
 	})
 
-	t.Run("FilterAsync predicate error can be tolerated by a breaker", func(t *testing.T) {
+	t.Run("FilterCtx predicate error can be tolerated by a breaker", func(t *testing.T) {
 		for name, opts := range map[string][]chunkflow.Option{
 			"sequential": nil,
 			"parallel":   {chunkflow.WithParallel(2)},
@@ -207,7 +207,7 @@ func TestIoStream_PredicateErrors(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				// predicate fails on 3; upstream source fails after 6 items
 				res, err := chunkflow.NewIo(ctx).Seq2(errAfter(6, errBoom)).
-					FilterAsync(failOn(3), opts...).
+					FilterCtx(failOn(3), opts...).
 					CircuitBreaker(100).
 					Collect()
 				require.NoError(t, err)
@@ -216,7 +216,7 @@ func TestIoStream_PredicateErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("FilterAsync stops pulling once First has a match", func(t *testing.T) {
+	t.Run("FilterCtx stops pulling once First has a match", func(t *testing.T) {
 		var pulled int
 		src := chunkflow.NewIo(ctx).Seq(func(yield func(int) bool) {
 			for i := 0; ; i++ {
@@ -226,7 +226,7 @@ func TestIoStream_PredicateErrors(t *testing.T) {
 				}
 			}
 		})
-		v, ok, err := src.FilterAsync(func(_ context.Context, i int) (bool, error) { return i >= 2, nil }).First()
+		v, ok, err := src.FilterCtx(func(_ context.Context, i int) (bool, error) { return i >= 2, nil }).First()
 		require.NoError(t, err)
 		assert.True(t, ok)
 		assert.Equal(t, 2, v)
@@ -243,7 +243,7 @@ func TestIoStream_AllAnyEdgeCases(t *testing.T) {
 	// every element fails upstream and gets suppressed, so nothing reaches the terminal
 	onlySuppressed := func() chunkflow.IoStream[int] {
 		return chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).
-			MapAsync(func(context.Context, int) (int, error) { return 0, errBoom }).
+			MapCtx(func(context.Context, int) (int, error) { return 0, errBoom }).
 			CircuitBreaker(100)
 	}
 
@@ -309,13 +309,13 @@ func TestIoStream_FailFastStopsEveryStage(t *testing.T) {
 	truthy := func(context.Context, int) (bool, error) { return true, nil }
 
 	stages := map[string]func(chunkflow.IoStream[int]) chunkflow.IoStream[int]{
-		"MapAsync": func(s chunkflow.IoStream[int]) chunkflow.IoStream[int] { return s.MapAsync(identity) },
-		"MapAsync parallel": func(s chunkflow.IoStream[int]) chunkflow.IoStream[int] {
-			return s.MapAsync(identity, chunkflow.WithParallel(2))
+		"MapCtx": func(s chunkflow.IoStream[int]) chunkflow.IoStream[int] { return s.MapCtx(identity) },
+		"MapCtx parallel": func(s chunkflow.IoStream[int]) chunkflow.IoStream[int] {
+			return s.MapCtx(identity, chunkflow.WithParallel(2))
 		},
-		"FilterAsync": func(s chunkflow.IoStream[int]) chunkflow.IoStream[int] { return s.FilterAsync(truthy) },
-		"FilterAsync parallel": func(s chunkflow.IoStream[int]) chunkflow.IoStream[int] {
-			return s.FilterAsync(truthy, chunkflow.WithParallel(2))
+		"FilterCtx": func(s chunkflow.IoStream[int]) chunkflow.IoStream[int] { return s.FilterCtx(truthy) },
+		"FilterCtx parallel": func(s chunkflow.IoStream[int]) chunkflow.IoStream[int] {
+			return s.FilterCtx(truthy, chunkflow.WithParallel(2))
 		},
 		"Skip": func(s chunkflow.IoStream[int]) chunkflow.IoStream[int] { return s.Skip(1) },
 		"TakeWhile": func(s chunkflow.IoStream[int]) chunkflow.IoStream[int] {

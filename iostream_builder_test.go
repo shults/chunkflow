@@ -37,7 +37,7 @@ func TestIoBuilder(t *testing.T) {
 
 		res, err := chunkflow.NewIo(ctx, chunkflow.WithParallel(workers)).
 			Seq(seq.Range(0, workers)).
-			MapAsync(func(_ context.Context, i int) (int, error) {
+			MapCtx(func(_ context.Context, i int) (int, error) {
 				entered.Add(1)
 				<-gate
 				return i, nil
@@ -45,7 +45,7 @@ func TestIoBuilder(t *testing.T) {
 			Collect()
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []int{0, 1, 2, 3}, res)
-		assert.False(t, timedOut.Load(), "WithParallel from NewIo was not applied to MapAsync")
+		assert.False(t, timedOut.Load(), "WithParallel from NewIo was not applied to MapCtx")
 	})
 
 	t.Run("the same builder can produce streams of different types", func(t *testing.T) {
@@ -184,7 +184,7 @@ func TestIoBuilder_Chan(t *testing.T) {
 
 		res, err := chunkflow.NewIo(cctx, chunkflow.WithParallel(3)).
 			Chan(jobs).
-			MapAsync(func(_ context.Context, i int) (int, error) { return i * 2, nil }).
+			MapCtx(func(_ context.Context, i int) (int, error) { return i * 2, nil }).
 			Take(10).
 			Collect()
 		require.NoError(t, err)

@@ -26,7 +26,7 @@ func TestIoStream_Basic(t *testing.T) {
 		// Success case
 		res, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2)).
-			MapAsync(func(ctx context.Context, item int) (int, error) {
+			MapCtx(func(ctx context.Context, item int) (int, error) {
 				return item * 10, nil
 			}).
 			Collect()
@@ -37,7 +37,7 @@ func TestIoStream_Basic(t *testing.T) {
 		// Failure case
 		res, err = chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2)).
-			MapAsync(func(ctx context.Context, item int) (int, error) {
+			MapCtx(func(ctx context.Context, item int) (int, error) {
 				if item == 2 {
 					return 0, errors.New("test error")
 				}
@@ -56,7 +56,7 @@ func TestIoStream_ConcurrentMap(t *testing.T) {
 	t.Run("concurrency less than 1 propagates error", func(t *testing.T) {
 		res, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1)).
-			MapAsync(func(ctx context.Context, item int) (int, error) {
+			MapCtx(func(ctx context.Context, item int) (int, error) {
 				return item, nil
 			}, chunkflow.WithParallel(0)).
 			Collect()
@@ -68,7 +68,7 @@ func TestIoStream_ConcurrentMap(t *testing.T) {
 	t.Run("valid ConcurrentMap transforms elements", func(t *testing.T) {
 		res, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
-			MapAsync(func(ctx context.Context, item int) (int, error) {
+			MapCtx(func(ctx context.Context, item int) (int, error) {
 				return item * 2, nil
 			}, chunkflow.WithParallel(2)).
 			Collect()
@@ -77,12 +77,12 @@ func TestIoStream_ConcurrentMap(t *testing.T) {
 		assert.ElementsMatch(t, []int{2, 4, 6}, res)
 	})
 
-	t.Run("MapAsync returns error from worker", func(t *testing.T) {
+	t.Run("MapCtx returns error from worker", func(t *testing.T) {
 		var dummyErr = errors.New("concurrent error")
 
 		_, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2)).
-			MapAsync(func(ctx context.Context, item int) (int, error) {
+			MapCtx(func(ctx context.Context, item int) (int, error) {
 				if item == 2 {
 					return 0, dummyErr
 				}
@@ -117,13 +117,13 @@ func TestIoStream_Take(t *testing.T) {
 	})
 }
 
-func TestIoStream_AsyncMethods(t *testing.T) {
+func TestIoStream_CtxMethods(t *testing.T) {
 	ctx := t.Context()
 
-	t.Run("FilterAsync", func(t *testing.T) {
+	t.Run("FilterCtx", func(t *testing.T) {
 		res, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2, 3, 4)).
-			FilterAsync(func(_ context.Context, i int) (bool, error) {
+			FilterCtx(func(_ context.Context, i int) (bool, error) {
 				return i%2 == 0, nil
 			}).
 			Collect()
@@ -131,7 +131,7 @@ func TestIoStream_AsyncMethods(t *testing.T) {
 		assert.Equal(t, []int{2, 4}, res)
 	})
 
-	t.Run("ChunkAsync", func(t *testing.T) {
+	t.Run("Chunk", func(t *testing.T) {
 		chunks, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2, 3, 4, 5)).
 			Chunk(2).
@@ -141,7 +141,7 @@ func TestIoStream_AsyncMethods(t *testing.T) {
 		assert.Equal(t, [][]int{{1, 2}, {3, 4}, {5}}, chunks)
 	})
 
-	t.Run("SkipAsync", func(t *testing.T) {
+	t.Run("Skip", func(t *testing.T) {
 		res, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2, 3, 4)).
 			Skip(2).
@@ -151,21 +151,21 @@ func TestIoStream_AsyncMethods(t *testing.T) {
 		assert.Equal(t, []int{3, 4}, res)
 	})
 
-	t.Run("ReduceAsync", func(t *testing.T) {
+	t.Run("ReduceCtx", func(t *testing.T) {
 		sum, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
-			ReduceAsync(0, func(ctx context.Context, item, acc int) (int, error) {
+			ReduceCtx(0, func(ctx context.Context, item, acc int) (int, error) {
 				return acc + item, nil
 			})
 		require.NoError(t, err)
 		assert.Equal(t, 6, sum)
 	})
 
-	t.Run("AllAsync", func(t *testing.T) {
+	t.Run("AllCtx", func(t *testing.T) {
 
 		allEven, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(2, 4, 6)).
-			AllAsync(func(ctx context.Context, i int) (bool, error) {
+			AllCtx(func(ctx context.Context, i int) (bool, error) {
 				return i%2 == 0, nil
 			})
 
@@ -185,10 +185,10 @@ func TestIoStream_AsyncMethods(t *testing.T) {
 		assert.True(t, allEven)
 	})
 
-	t.Run("FilterAsync parallel", func(t *testing.T) {
+	t.Run("FilterCtx parallel", func(t *testing.T) {
 		res, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2, 3, 4)).
-			FilterAsync(func(ctx context.Context, i int) (bool, error) {
+			FilterCtx(func(ctx context.Context, i int) (bool, error) {
 				return i%2 == 0, nil
 			}, chunkflow.WithParallel(2)).
 			Collect()
@@ -216,11 +216,11 @@ func TestIoStream_AsyncMethods(t *testing.T) {
 		assert.Equal(t, []int{2}, res)
 	})
 
-	t.Run("AnyAsync", func(t *testing.T) {
+	t.Run("AnyCtx", func(t *testing.T) {
 
 		hasEven, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 3, 4)).
-			AnyAsync(func(ctx context.Context, i int) (bool, error) {
+			AnyCtx(func(ctx context.Context, i int) (bool, error) {
 				return i%2 == 0, nil
 			})
 		require.NoError(t, err)

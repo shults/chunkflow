@@ -48,7 +48,7 @@ func ExampleIoBuilder_Chan() {
 	// Output: [1 4 9] <nil>
 }
 
-func ExampleIoStream_MapAsync() {
+func ExampleIoStream_MapCtx() {
 	ctx := context.Background()
 
 	parse := func(_ context.Context, s string) (int, error) {
@@ -59,31 +59,31 @@ func ExampleIoStream_MapAsync() {
 
 	// The first error stops the pipeline; values collected before it are returned.
 	nums, err := chunkflow.NewIo(ctx).Seq(seq.Items("1", "2", "x", "4")).
-		MapAsync(parse).
+		MapCtx(parse).
 		Collect()
 
 	fmt.Println(nums, err != nil)
 	// Output: [1 2] true
 }
 
-func ExampleIoStream_MapAsync_parallel() {
+func ExampleIoStream_MapCtx_parallel() {
 	ctx := context.Background()
 
 	square := func(_ context.Context, i int) (int, error) { return i * i, nil }
 
 	// With WithParallel(n) the output order is not guaranteed, so reduce instead of collecting.
 	sum, err := chunkflow.NewIo(ctx).Seq(seq.RangeInclusive(1, 100)).
-		MapAsync(square, chunkflow.WithParallel(4)).
+		MapCtx(square, chunkflow.WithParallel(4)).
 		Reduce(0, func(item, acc int) int { return acc + item })
 
 	fmt.Println(sum, err)
 	// Output: 338350 <nil>
 }
 
-func ExampleIoStream_TapAsync() {
+func ExampleIoStream_TapCtx() {
 	ctx := context.Background()
 
-	// TapAsync can veto an element by returning an error, e.g. an audit check.
+	// TapCtx can veto an element by returning an error, e.g. an audit check.
 	audit := func(_ context.Context, amount int) error {
 		if amount > 100 {
 			return fmt.Errorf("amount %d exceeds limit", amount)
@@ -92,7 +92,7 @@ func ExampleIoStream_TapAsync() {
 	}
 
 	got, err := chunkflow.NewIo(ctx).Seq(seq.Items(10, 50, 500, 20)).
-		TapAsync(audit).
+		TapCtx(audit).
 		Collect()
 
 	fmt.Println(got, err)
@@ -141,7 +141,7 @@ func ExampleIoStream_Chunk_deduplication() {
 
 	err := chunkflow.NewIo(ctx).Seq(seq.Items("a", "b", "a", "c", "b", "d", "a")).
 		Chunk[[]string](3).
-		MapAsync(insertNew).
+		MapCtx(insertNew).
 		Through(chunkflow.IoFlatten).
 		ForEach(func(id string) { fmt.Println("new:", id) })
 
@@ -167,7 +167,7 @@ func ExampleIoStream_CircuitBreaker() {
 
 	// Up to 2 consecutive failures are tolerated; the 3rd in a row would trip the breaker.
 	got, err := chunkflow.NewIo(ctx).Seq(seq.Range(1, 7)).
-		MapAsync(fetch).
+		MapCtx(fetch).
 		CircuitBreaker(3).
 		Collect()
 
@@ -187,7 +187,7 @@ func ExampleIoStream_CircuitBreaker_tripped() {
 	}
 
 	got, err := chunkflow.NewIo(ctx).Seq(seq.Numbers(1)). // infinite source
-								MapAsync(fetch).
+								MapCtx(fetch).
 								CircuitBreaker(3).
 								Collect()
 
@@ -214,7 +214,7 @@ func ExampleIoStream_Seq() {
 	// Seq exposes suppressed errors instead of hiding them, so the consumer can
 	// count or log what the breaker tolerated.
 	tolerated := 0
-	for v, err := range chunkflow.NewIo(ctx).Seq(seq.Range(0, 6)).MapAsync(rejectOdd).CircuitBreaker(2).Seq() {
+	for v, err := range chunkflow.NewIo(ctx).Seq(seq.Range(0, 6)).MapCtx(rejectOdd).CircuitBreaker(2).Seq() {
 		switch {
 		case err == nil:
 			fmt.Println("value", v)

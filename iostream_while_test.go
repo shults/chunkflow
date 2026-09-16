@@ -29,7 +29,7 @@ func TestIoStream_TakeWhile(t *testing.T) {
 	t.Run("errors pass through without being evaluated", func(t *testing.T) {
 		// 0..9 with 2,3,4 failing; predicate i < 6 must only see values
 		res, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).
-			MapAsync(failing).
+			MapCtx(failing).
 			TakeWhile(func(i int) bool { return i < 6 }).
 			CircuitBreaker(100).
 			Collect()
@@ -51,10 +51,10 @@ func TestIoStream_TakeWhile(t *testing.T) {
 		assert.Equal(t, []int{1, 2}, res)
 	})
 
-	t.Run("Async predicate error is fatal without a breaker", func(t *testing.T) {
+	t.Run("Ctx predicate error is fatal without a breaker", func(t *testing.T) {
 		errPred := errors.New("predicate")
 		res, err := chunkflow.NewIo(ctx).Seq(seq.Numbers(0)).
-			TakeWhileAsync(func(_ context.Context, i int) (bool, error) {
+			TakeWhileCtx(func(_ context.Context, i int) (bool, error) {
 				if i == 2 {
 					return false, errPred
 				}
@@ -65,10 +65,10 @@ func TestIoStream_TakeWhile(t *testing.T) {
 		assert.Equal(t, []int{0, 1}, res)
 	})
 
-	t.Run("Async predicate error is emitted and evaluation continues", func(t *testing.T) {
+	t.Run("Ctx predicate error is emitted and evaluation continues", func(t *testing.T) {
 		errPred := errors.New("predicate")
 		res, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).
-			TakeWhileAsync(func(_ context.Context, i int) (bool, error) {
+			TakeWhileCtx(func(_ context.Context, i int) (bool, error) {
 				if i == 2 {
 					return false, errPred // must not end the stream on its own
 				}
@@ -80,11 +80,11 @@ func TestIoStream_TakeWhile(t *testing.T) {
 		assert.Equal(t, []int{0, 1, 3, 4}, res)
 	})
 
-	t.Run("Async predicate receives the stream context", func(t *testing.T) {
+	t.Run("Ctx predicate receives the stream context", func(t *testing.T) {
 		type key struct{}
 		cctx := context.WithValue(ctx, key{}, true)
 		res, err := chunkflow.NewIo(cctx).Seq(seq.Range(0, 3)).
-			TakeWhileAsync(func(ctx context.Context, _ int) (bool, error) {
+			TakeWhileCtx(func(ctx context.Context, _ int) (bool, error) {
 				v, _ := ctx.Value(key{}).(bool)
 				return v, nil
 			}).
@@ -113,7 +113,7 @@ func TestIoStream_SkipWhile(t *testing.T) {
 		var suppressed int
 		var values []int
 		for v, err := range chunkflow.NewIo(ctx).Seq(seq.Range(0, 10)).
-			MapAsync(failing).
+			MapCtx(failing).
 			SkipWhile(func(i int) bool { return i < 6 }).
 			CircuitBreaker(100).
 			Seq() {
@@ -128,10 +128,10 @@ func TestIoStream_SkipWhile(t *testing.T) {
 		assert.Equal(t, 3, suppressed, "errors are not swallowed by the skipping phase")
 	})
 
-	t.Run("Async predicate error is emitted and skipping continues", func(t *testing.T) {
+	t.Run("Ctx predicate error is emitted and skipping continues", func(t *testing.T) {
 		errPred := errors.New("predicate")
 		res, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 8)).
-			SkipWhileAsync(func(_ context.Context, i int) (bool, error) {
+			SkipWhileCtx(func(_ context.Context, i int) (bool, error) {
 				if i == 1 {
 					return false, errPred
 				}
@@ -155,10 +155,10 @@ func TestIoStream_SkipWhile(t *testing.T) {
 		assert.Equal(t, 5, pulled)
 	})
 
-	t.Run("Async predicate error is fatal without a breaker", func(t *testing.T) {
+	t.Run("Ctx predicate error is fatal without a breaker", func(t *testing.T) {
 		errPred := errors.New("predicate")
 		_, err := chunkflow.NewIo(ctx).Seq(seq.Range(0, 8)).
-			SkipWhileAsync(func(context.Context, int) (bool, error) { return false, errPred }).
+			SkipWhileCtx(func(context.Context, int) (bool, error) { return false, errPred }).
 			Collect()
 		require.ErrorIs(t, err, errPred)
 	})

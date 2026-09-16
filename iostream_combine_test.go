@@ -34,7 +34,7 @@ func TestIoStream_Concat(t *testing.T) {
 
 	t.Run("errors keep their position and pass through", func(t *testing.T) {
 		res, err := chunkflow.IoConcat(
-			chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).MapAsync(failing), // 2,3,4 fail
+			chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).MapCtx(failing), // 2,3,4 fail
 			chunkflow.NewIo(ctx).Seq(seq.Items(9)),
 		).CircuitBreaker(100).Collect()
 		require.NoError(t, err)
@@ -54,11 +54,11 @@ func TestIoStream_Concat(t *testing.T) {
 		otherCtx, cancel := context.WithCancel(ctx)
 		cancel() // the SECOND stream's context, not the head's
 
-		// The downstream MapAsync runs on the concat's context, so it must observe the cancel.
+		// The downstream MapCtx runs on the concat's context, so it must observe the cancel.
 		_, err := chunkflow.IoConcat(
 			chunkflow.NewIo(ctx).Seq(seq.Items(1)),
 			chunkflow.NewIo(otherCtx).Seq(seq.Items(2)),
-		).MapAsync(func(ctx context.Context, i int) (int, error) { return i, ctx.Err() }).Collect()
+		).MapCtx(func(ctx context.Context, i int) (int, error) { return i, ctx.Err() }).Collect()
 		require.ErrorIs(t, err, context.Canceled)
 	})
 }
@@ -123,7 +123,7 @@ func TestIoStream_MergeContexts(t *testing.T) {
 		err := chunkflow.IoMerge(
 			chunkflow.NewIo(headCtx).Seq(seq.Items(1)),
 			chunkflow.NewIo(otherCtx).Seq(seq.Items(2)),
-		).ForEachAsync(func(ctx context.Context, _ int) error {
+		).ForEachCtx(func(ctx context.Context, _ int) error {
 			v, _ := ctx.Value(key{}).(string)
 			fromCtx = append(fromCtx, v)
 			return nil
@@ -200,7 +200,7 @@ func TestIoStream_Merge(t *testing.T) {
 	t.Run("errors pass through and can be tolerated", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
 		res, err := chunkflow.IoMerge(
-			chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).MapAsync(failing), // 2,3,4 fail
+			chunkflow.NewIo(ctx).Seq(seq.Range(0, 5)).MapCtx(failing), // 2,3,4 fail
 			chunkflow.NewIo(ctx).Seq(seq.Range(10, 13)),
 		).CircuitBreaker(100).Collect()
 		require.NoError(t, err)

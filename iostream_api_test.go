@@ -42,7 +42,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		var seen []int
 		res, err := chunkflow.
 			NewIo(ctx).Seq(seq.Range(0, 10)).
-			MapAsync(failing). // 2,3,4 fail
+			MapCtx(failing). // 2,3,4 fail
 			Tap(func(i int) { seen = append(seen, i) }).
 			CircuitBreaker(100).
 			Collect()
@@ -51,11 +51,11 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		assert.Equal(t, []int{0, 1, 5, 6, 7, 8, 9}, seen)
 	})
 
-	t.Run("TapAsync error replaces the value and is fatal for terminals", func(t *testing.T) {
+	t.Run("TapCtx error replaces the value and is fatal for terminals", func(t *testing.T) {
 		errAudit := errors.New("audit")
 		res, err := chunkflow.
 			NewIo(ctx).Seq(seq.Range(1, 6)).
-			TapAsync(func(_ context.Context, i int) error {
+			TapCtx(func(_ context.Context, i int) error {
 				if i == 3 {
 					return errAudit
 				}
@@ -66,14 +66,14 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		assert.Equal(t, []int{1, 2}, res)
 	})
 
-	t.Run("TapAsync receives the stream context and runs in parallel", func(t *testing.T) {
+	t.Run("TapCtx receives the stream context and runs in parallel", func(t *testing.T) {
 		type key struct{}
 		cctx := context.WithValue(ctx, key{}, "tap")
 		var okCtx, calls atomic.Int32
 
 		res, err := chunkflow.
 			NewIo(cctx).Seq(seq.Range(0, 20)).
-			TapAsync(func(ctx context.Context, _ int) error {
+			TapCtx(func(ctx context.Context, _ int) error {
 				calls.Add(1)
 				if v, _ := ctx.Value(key{}).(string); v == "tap" {
 					okCtx.Add(1)
@@ -117,7 +117,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		boom := errors.New("boom")
 		_, ok, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1)).
-			MapAsync(func(context.Context, int) (int, error) { return 0, boom }).
+			MapCtx(func(context.Context, int) (int, error) { return 0, boom }).
 			First()
 		require.ErrorIs(t, err, boom)
 		assert.False(t, ok)
@@ -136,7 +136,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		var errs []error
 		s := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
-			MapAsync(func(_ context.Context, i int) (int, error) {
+			MapCtx(func(_ context.Context, i int) (int, error) {
 				if i == 2 {
 					return 0, boom
 				}
@@ -154,7 +154,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		boom := errors.New("boom")
 		src := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
-			MapAsync(func(_ context.Context, i int) (int, error) {
+			MapCtx(func(_ context.Context, i int) (int, error) {
 				if i == 3 {
 					return 0, boom
 				}
@@ -185,7 +185,7 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		boom := errors.New("boom")
 		n, err = chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
-			MapAsync(func(_ context.Context, i int) (int, error) {
+			MapCtx(func(_ context.Context, i int) (int, error) {
 				if i == 3 {
 					return 0, boom
 				}
@@ -196,12 +196,12 @@ func TestIoStream_AlignedWithStream(t *testing.T) {
 		assert.Equal(t, 2, n)
 	})
 
-	t.Run("ForEachAsync stops on callback error", func(t *testing.T) {
+	t.Run("ForEachCtx stops on callback error", func(t *testing.T) {
 		boom := errors.New("boom")
 		var seen []int
 		err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1, 2, 3)).
-			ForEachAsync(func(_ context.Context, i int) error {
+			ForEachCtx(func(_ context.Context, i int) error {
 				seen = append(seen, i)
 				if i == 2 {
 					return boom
@@ -243,7 +243,7 @@ func TestIoStream_Options(t *testing.T) {
 			NewIo(ctx).Seq(seq.Range(0, workers)).
 			Opts(chunkflow.WithParallel(workers)).
 			Skip(0). // derived stream must still carry the configured concurrency
-			MapAsync(func(_ context.Context, i int) (int, error) {
+			MapCtx(func(_ context.Context, i int) (int, error) {
 				entered.Add(1)
 				<-gate
 				return i, nil
@@ -259,26 +259,26 @@ func TestIoStream_Options(t *testing.T) {
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
-		// ReduceAsync warns when asked for concurrency > 1
+		// ReduceCtx warns when asked for concurrency > 1
 		_, err := chunkflow.NewIo(ctx).Seq(seq.Items(1, 2)).
 			Opts(chunkflow.WithLogger(logger)).
-			ReduceAsync(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil }, chunkflow.WithParallel(2))
+			ReduceCtx(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil }, chunkflow.WithParallel(2))
 		require.NoError(t, err)
 		assert.Contains(t, buf.String(), "level=WARN")
 
 		buf.Reset()
 		_, err = chunkflow.NewIo(ctx).Seq(seq.Items(1, 2)).
 			Opts(chunkflow.WithLogger(logger)).
-			ReduceAsync(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil },
+			ReduceCtx(0, func(_ context.Context, item, acc int) (int, error) { return acc + item, nil },
 				chunkflow.WithParallel(2), chunkflow.WithDiscardLogger())
 		require.NoError(t, err)
 		assert.Empty(t, buf.String())
 	})
 
-	t.Run("FilterAsync rejects concurrency below 1", func(t *testing.T) {
+	t.Run("FilterCtx rejects concurrency below 1", func(t *testing.T) {
 		_, err := chunkflow.
 			NewIo(ctx).Seq(seq.Items(1)).
-			FilterAsync(func(context.Context, int) (bool, error) { return true, nil }, chunkflow.WithParallel(0)).
+			FilterCtx(func(context.Context, int) (bool, error) { return true, nil }, chunkflow.WithParallel(0)).
 			Collect()
 		assert.ErrorContains(t, err, "concurrency must be at least 1")
 	})
@@ -299,13 +299,13 @@ func TestIoStream_Options(t *testing.T) {
 
 			_, err := chunkflow.
 				NewIo(cctx).Seq(seq.Range(0, 100)).
-				MapAsync(func(_ context.Context, i int) (int, error) { return i, nil }, chunkflow.WithParallel(4)).
+				MapCtx(func(_ context.Context, i int) (int, error) { return i, nil }, chunkflow.WithParallel(4)).
 				Collect()
 			require.ErrorIs(t, err, context.Canceled)
 
 			_, err = chunkflow.
 				NewIo(cctx).Seq(seq.Range(0, 100)).
-				FilterAsync(func(context.Context, int) (bool, error) { return true, nil }, chunkflow.WithParallel(4)).
+				FilterCtx(func(context.Context, int) (bool, error) { return true, nil }, chunkflow.WithParallel(4)).
 				Collect()
 			require.ErrorIs(t, err, context.Canceled)
 		}

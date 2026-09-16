@@ -20,7 +20,7 @@ Goal: every future change is guarded by CI, leak detection and coverage.
 - [x] **Goroutine leak detection** with `go.uber.org/goleak`
   - [x] `goleak.VerifyTestMain(m)` in a `TestMain` for the root package
   - [x] `defer goleak.VerifyNone(t)` in every test that exercises `WithParallel(n > 1)`
-  - [x] scenario: consumer short-circuits (`Take(1)`) after `MapAsync(WithParallel(4))` on `seq.Numbers`
+  - [x] scenario: consumer short-circuits (`Take(1)`) after `MapCtx(WithParallel(4))` on `seq.Numbers`
   - [x] scenario: context cancelled while a worker is blocked on the output channel
   - [x] scenario: one worker fails while the others are still running
   - [x] scenario: upstream source yields an error while workers are busy
@@ -30,8 +30,8 @@ Goal: every future change is guarded by CI, leak detection and coverage.
         breaker works anywhere in the chain; tolerated errors are re-emitted marked as `ErrSuppressed` and
         skipped by terminals, observable via `Seq()` + `errors.Is(err, ErrSuppressed)`)
   - [x] `IoStream.Exec`, `IoStream.Reduce`
-  - [x] error paths of `IoStream.Chunk`, `IoFlatten`, `AllAsync`, `AnyAsync`, `ReduceAsync`
-  - [x] `WithLogger` — assert the `ReduceAsync` concurrency warning is emitted
+  - [x] error paths of `IoStream.Chunk`, `IoFlatten`, `AllCtx`, `AnyCtx`, `ReduceCtx`
+  - [x] `WithLogger` — assert the `ReduceCtx` concurrency warning is emitted
   - [x] `Stream.All` / `Stream.Any` on an empty stream
 - [x] **Example tests** (`example_test.go`) for `Stream`, `IoStream`, `seq` — they double as godoc
 - [x] **Package docs**: `doc.go` in the root package with the overview currently only in README
@@ -40,14 +40,14 @@ Goal: every future change is guarded by CI, leak detection and coverage.
 
 Goal: fill in the operators a typical ETL pipeline needs, keeping `Stream` / `IoStream` symmetric.
 
-- [x] `TakeWhile`, `SkipWhile` (+ `TakeWhileAsync`, `SkipWhileAsync` on `IoStream`)
+- [x] `TakeWhile`, `SkipWhile` (+ `TakeWhileCtx`, `SkipWhileCtx` on `IoStream`)
 - [x] `Tap(fn func(T))` — per-element side effect that passes the element through unchanged
       (sugar for `Map(func(x T) T { fn(x); return x })`; not to be confused with `Through`,
-      which rewires the whole pipeline). `TapAsync` on `IoStream`.
+      which rewires the whole pipeline). `TapCtx` on `IoStream`.
 - [x] `Count()` terminal
 - [x] ~~`Distinct()`~~ — deliberately not added. A global "seen" set needs O(unique) memory and
       belongs to the user (DB, KV store, Bloom filter), not inside the pipeline. The batched
-      pattern `Chunk(n).MapAsync(dedupAgainstStore).Through(IoFlatten)` is documented as
+      pattern `Chunk(n).MapCtx(dedupAgainstStore).Through(IoFlatten)` is documented as
       `ExampleIoStream_Chunk_deduplication`; one round trip per batch beats a per-element check
 - [x] `Compact()` / `CompactFunc(eq)` — drop *consecutive* duplicates in O(1) memory, same contract
       and name as `slices.Compact`; precondition (sorted or grouped input) stated in the first
@@ -69,18 +69,19 @@ Goal: fill in the operators a typical ETL pipeline needs, keeping `Stream` / `Io
 
 Goal: fix the shapes that are awkward now, while nobody depends on them.
 
-- [ ] rename the `*Async` family to `*Ctx`: `MapCtx`, `FilterCtx`, `TapCtx`, `TakeWhileCtx`, `SkipWhileCtx`,
+- [x] rename the `*Async` family to `*Ctx`: `MapCtx`, `FilterCtx`, `TapCtx`, `TakeWhileCtx`, `SkipWhileCtx`,
       `ForEachCtx`, `ReduceCtx`, `AllCtx`, `AnyCtx`. `Async` describes behaviour these methods do not
       have (they block; parallelism is a separate `WithParallel` option). What actually differs is the
       callback shape: it receives a `context.Context` and may return an error — the Go std convention
       for that is a context suffix (`ExecContext`, `DialContext`); `Ctx` is the short form. A suffix,
       not a prefix, so `Map` and `MapCtx` sit next to each other in godoc and completion. Mechanical
-      rename across code, tests, examples, README, doc.go, GEMINI.md
+      rename across code, tests, examples, README, doc.go, AGENTS.md. Conventions and their
+      reasons are now recorded in `CONVENTIONS.md`
 - [ ] `Reduce(init, fn(acc, item))` — flip the *callback* argument order to Go's conventional
       `(acc, item)` on both stream types. `init` stays the first parameter, before the closure:
       an init value trailing a multi-line func literal reads badly
 - [ ] recover panics inside worker goroutines and surface them as errors (a panic in a worker currently kills the process)
-- [ ] `WithOrdered()` option for `MapAsync` / `FilterAsync` — preserve input order under `WithParallel(n > 1)`
+- [ ] `WithOrdered()` option for `MapCtx` / `FilterCtx` — preserve input order under `WithParallel(n > 1)`
   - sliding window: `n` workers pull freely, but results are emitted strictly in source order;
     a finished item whose predecessors are still running waits in a reorder buffer
   - bounded read-ahead via `WithWindow(k)` (default `k = 2n`): at most `k` items may be pulled from
@@ -107,7 +108,7 @@ Goal: README states "O(1) memory" and "no heap allocation in intermediate ops"; 
 Runs last, against the API frozen in Phase 3, so numbers are not invalidated by signature changes.
 
 - [ ] `BenchmarkStream_*` for `Map`, `Filter`, `Take`, `Skip`, `Chunk`, `Flatten` with `-benchmem`
-- [ ] `BenchmarkIoStream_*` for the sequential and the `WithParallel(n)` paths of `MapAsync` / `FilterAsync`
+- [ ] `BenchmarkIoStream_*` for the sequential and the `WithParallel(n)` paths of `MapCtx` / `FilterCtx`
 - [ ] baseline the numbers with `benchstat` and keep the results in `BENCHMARKS.md`
 - [ ] adjust README wording to what the benchmarks show (per-stage vs per-element allocations)
 - [ ] optional: CI job that runs benchmarks on PRs and comments the `benchstat` diff
@@ -140,7 +141,7 @@ Ideas without a decision yet.
   more general thing: a stage that looks only at errored elements and decides *fatal* / *tolerated* /
   *replaced*. Others of the same family: tolerate all, tolerate `errors.Is(err, X)`, tolerate below an
   error rate in a window. `Retry` is not one of them (it must re-run the upstream op, so it wraps
-  `MapAsync` instead).
+  `MapCtx` instead).
   - the extension seam already exists: errors flow as elements, `Seq()` / `NewIo(ctx).Seq2` cross the
     boundary in both directions, `Through` plugs a transform in. The only missing piece is a way to
     mark an error as tolerated from outside — an exported constructor such as `Suppress(err) error`,

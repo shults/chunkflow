@@ -109,10 +109,10 @@ Every method below exists with the same name and shape on both `Stream[T]` and `
 
 | Method | Signature | Description |
 | --- | --- | --- |
-| `MapAsync` | `MapAsync[R](func(ctx, T) (R, error), ...Option)` | Like `Map`, but may fail and run on `WithParallel(n)` workers (order not preserved for n > 1). |
-| `FilterAsync` | `FilterAsync(func(ctx, T) (bool, error), ...Option)` | Like `Filter`, with the same error and concurrency semantics as `MapAsync`. |
-| `TapAsync` | `TapAsync(func(ctx, T) error, ...Option)` | Like `Tap`; a returned error replaces the element. Same concurrency semantics as `MapAsync`. |
-| `TakeWhileAsync` / `SkipWhileAsync` | `(func(ctx, T) (bool, error))` | Context-aware predicates; always sequential. Errors in the stream pass through unevaluated. |
+| `MapCtx` | `MapCtx[R](func(ctx, T) (R, error), ...Option)` | Like `Map`, but may fail and run on `WithParallel(n)` workers (order not preserved for n > 1). |
+| `FilterCtx` | `FilterCtx(func(ctx, T) (bool, error), ...Option)` | Like `Filter`, with the same error and concurrency semantics as `MapCtx`. |
+| `TapCtx` | `TapCtx(func(ctx, T) error, ...Option)` | Like `Tap`; a returned error replaces the element. Same concurrency semantics as `MapCtx`. |
+| `TakeWhileCtx` / `SkipWhileCtx` | `(func(ctx, T) (bool, error))` | Context-aware predicates; always sequential. Errors in the stream pass through unevaluated. |
 | `CircuitBreaker` | `CircuitBreaker(maxConsecutiveFailures int)` | Tolerates up to `n-1` errors in a row by re-emitting them marked as `ErrSuppressed`; trips on the `n`-th. Context errors are never suppressed. |
 | `Opts` | `Opts(...Option)` | Sets default options (`WithParallel`, `WithLogger`, `WithDiscardLogger`) inherited by all downstream operations. |
 
@@ -172,7 +172,7 @@ consumption and is returned.
 | `Last` | `(T, bool)` | `(T, bool, error)` | Consumes the entire stream to return the final element. | Requires a finite stream |
 | `Seq` | `iter.Seq[T]` | `iter.Seq2[T, error]` | Exposes the pipeline as a native iterator. | - |
 
-`IoStream[T]` also provides `ReduceAsync`, `AllAsync`, `AnyAsync` and `ForEachAsync`, whose callbacks
+`IoStream[T]` also provides `ReduceCtx`, `AllCtx`, `AnyCtx` and `ForEachCtx`, whose callbacks
 receive the `context.Context` and may return an error.
 
 ## Design Notes: Why `Flatten` requires `Through`

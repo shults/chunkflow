@@ -29,12 +29,12 @@ func blockUntilCancelled[T any](ctx context.Context, item T) (T, error) {
 func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 	ctx := t.Context()
 
-	t.Run("consumer short-circuits with Take after parallel MapAsync on infinite source", func(t *testing.T) {
+	t.Run("consumer short-circuits with Take after parallel MapCtx on infinite source", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
 
 		res, err := chunkflow.
 			NewIo(ctx).Seq(seq.Numbers(0)).
-			MapAsync(func(_ context.Context, i int) (int, error) {
+			MapCtx(func(_ context.Context, i int) (int, error) {
 				return i * 2, nil
 			}, chunkflow.WithParallel(4)).
 			Take(1).
@@ -44,12 +44,12 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 		assert.Len(t, res, 1)
 	})
 
-	t.Run("consumer short-circuits after parallel FilterAsync on infinite source", func(t *testing.T) {
+	t.Run("consumer short-circuits after parallel FilterCtx on infinite source", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
 
 		val, ok, err := chunkflow.
 			NewIo(ctx).Seq(seq.Numbers(0)).
-			FilterAsync(func(_ context.Context, i int) (bool, error) {
+			FilterCtx(func(_ context.Context, i int) (bool, error) {
 				return i%7 == 0, nil
 			}, chunkflow.WithParallel(4)).
 			Skip(1).
@@ -70,7 +70,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 		go func() {
 			_, err := chunkflow.
 				NewIo(cctx).Seq(seq.Numbers(0)).
-				MapAsync(func(ctx context.Context, i int) (int, error) {
+				MapCtx(func(ctx context.Context, i int) (int, error) {
 					started.Add(1)
 					return blockUntilCancelled(ctx, i)
 				}, chunkflow.WithParallel(4)).
@@ -96,7 +96,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 		boom := errors.New("boom")
 		_, err := chunkflow.
 			NewIo(ctx).Seq(seq.Numbers(0)).
-			MapAsync(func(ctx context.Context, i int) (int, error) {
+			MapCtx(func(ctx context.Context, i int) (int, error) {
 				if i == 3 {
 					return 0, boom
 				}
@@ -123,7 +123,7 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 
 		_, err := chunkflow.
 			NewIo(ctx).Seq2(src).
-			MapAsync(blockUntilCancelled[int], chunkflow.WithParallel(4)).
+			MapCtx(blockUntilCancelled[int], chunkflow.WithParallel(4)).
 			Collect()
 
 		require.ErrorIs(t, err, boom)
@@ -134,8 +134,8 @@ func TestIoStream_NoGoroutineLeaks(t *testing.T) {
 
 		res, err := chunkflow.
 			NewIo(ctx).Seq(seq.Numbers(0)).
-			MapAsync(func(_ context.Context, i int) (int, error) { return i + 1, nil }, chunkflow.WithParallel(3)).
-			FilterAsync(func(_ context.Context, i int) (bool, error) { return i%2 == 0, nil }, chunkflow.WithParallel(2)).
+			MapCtx(func(_ context.Context, i int) (int, error) { return i + 1, nil }, chunkflow.WithParallel(3)).
+			FilterCtx(func(_ context.Context, i int) (bool, error) { return i%2 == 0, nil }, chunkflow.WithParallel(2)).
 			Chunk[[]int](5).
 			Through(chunkflow.IoFlatten).
 			Take(10).

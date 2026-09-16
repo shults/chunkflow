@@ -8,8 +8,8 @@
 //   - IoStream[T] adds a context.Context, error propagation and optional worker
 //     pools. Every Stream method exists on IoStream with the same name and shape;
 //     terminal operations additionally return an error, and callbacks that need
-//     the context or may fail have an *Async counterpart (MapAsync, FilterAsync,
-//     ReduceAsync, AllAsync, AnyAsync, ForEachAsync).
+//     the context or may fail have an *Ctx counterpart (MapCtx, FilterCtx,
+//     ReduceCtx, AllCtx, AnyCtx, ForEachCtx).
 //
 // # Constructing streams
 //
@@ -22,9 +22,9 @@
 //		Collect()
 //
 //	rows, err := chunkflow.NewIo(ctx, chunkflow.WithParallel(8)).Seq(seq.Items(ids...)).
-//		MapAsync(fetchRow).
+//		MapCtx(fetchRow).
 //		Chunk[[]Row](500).
-//		ForEachAsync(insertBatch)
+//		ForEachCtx(insertBatch)
 //
 // IoStream is built through NewIo(ctx, opts...), which binds the context and default
 // options first and lets the source pick the element type: Seq wraps an iter.Seq,
@@ -59,12 +59,12 @@
 // Every operation honours the yield protocol: when a consumer stops (Take, First,
 // Any, All, or a plain break in a range loop), the whole chain stops pulling from
 // the source. In IoStream a consumer stopping, or the context being cancelled,
-// also shuts down any worker pool spawned by MapAsync or FilterAsync; the
+// also shuts down any worker pool spawned by MapCtx or FilterCtx; the
 // cancellation itself is reported as an error by the terminal operation.
 //
 // # Options
 //
-// WithParallel(n) sets the worker count for *Async operations (default 1, ordered;
+// WithParallel(n) sets the worker count for *Ctx operations (default 1, ordered;
 // with n > 1 the output order is not guaranteed). WithLogger and WithDiscardLogger
 // control diagnostics. Options passed to Opts become defaults for every downstream
 // operation; options passed to a single operation apply to that call only.
