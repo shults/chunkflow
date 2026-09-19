@@ -6,6 +6,11 @@ import (
 	"runtime/debug"
 )
 
+// ErrEmpty is returned by First and Last when the stream produced no value. It is a
+// plain sentinel, not a wrapped element error: nothing failed, there was nothing to
+// return. It is never passed to the WithOnError hook.
+var ErrEmpty = errors.New("empty stream")
+
 // ErrSuppressed marks an error that a CircuitBreaker decided to tolerate.
 // Terminal operations skip elements carrying such an error instead of failing.
 // Use errors.Is(err, ErrSuppressed) to detect one, for example when iterating Stream.Seq();

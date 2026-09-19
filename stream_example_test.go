@@ -281,6 +281,21 @@ func ExampleMerge() {
 	// Output: 100 <nil>
 }
 
+func ExampleStream_First() {
+	ctx := context.Background()
+
+	// First stops the source after one value; Numbers is infinite.
+	v, err := chunkflow.New(ctx).Seq(seq.Numbers(1)).Filter(func(i int) bool { return i%5 == 0 }).First()
+	fmt.Println(v, err)
+
+	// An empty stream is not a failure, it is ErrEmpty.
+	_, err = chunkflow.New(ctx).Seq(seq.Items[int]()).First()
+	fmt.Println(errors.Is(err, chunkflow.ErrEmpty))
+	// Output:
+	// 5 <nil>
+	// true
+}
+
 func ExampleErrPanic() {
 	ctx := context.Background()
 

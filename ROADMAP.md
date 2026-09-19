@@ -49,12 +49,14 @@ Goal: fix the shapes that are awkward now, while nobody depends on them, then fr
   - tests: order preserved under random per-item delays; window bound respected (source pulls never
     exceed emitted + k); leak-free on short-circuit and cancellation (goleak); `Take(1)` after an
     ordered stage stops the pool
-- [ ] API trim review before the freeze — every exported name must defend its place. Candidates:
-  - `Count()` — one-line `Reduce`
-  - `Exec()` — `ForEach` with an empty func
-  - `Compact` (top-level) next to `CompactFunc` — saves one lambda
-  - `First` / `Last` returning `(T, bool, error)` vs `(T, error)` with an `ErrEmpty` sentinel
-- [ ] document in godoc of `MapCtx`/`FilterCtx`/`TapCtx` that after a fatal error the pool may still
+- [x] API trim review before the freeze — every exported name must defend its place. Outcome:
+  - `Count()` stays: a one-line `Reduce`, but the most common terminal after `Collect` and present
+    in every stream library
+  - ~~`Exec()`~~ renamed `Drain()`: the role (terminal for side-effect pipelines) is real, the name
+    was not; `Drain` is the established term, `Eval` would suggest a computed result
+  - `Compact` (top-level) stays next to `CompactFunc`: it mirrors `slices.Compact` / `slices.CompactFunc`
+  - `First` / `Last` now return `(T, error)` with the `ErrEmpty` sentinel (see CONVENTIONS.md)
+- [x] document in godoc of `MapCtx`/`FilterCtx`/`TapCtx` that after a fatal error the pool may still
       run the callback on items already buffered (up to `WithParallel(n)` of them) before it shuts down
 - [ ] tag `v0.1.0`
 

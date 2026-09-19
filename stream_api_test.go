@@ -99,33 +99,69 @@ func TestStream_AlignedWithStream(t *testing.T) {
 		assert.Equal(t, 3, evaluated)
 	})
 
-	t.Run("First returns element or reports empty", func(t *testing.T) {
-		val, ok, err := chunkflow.New(ctx).Seq(seq.Items(99, 100)).First()
+	t.Run("First returns element or ErrEmpty", func(t *testing.T) {
+		val, err := chunkflow.New(ctx).Seq(seq.Items(99, 100)).First()
 		require.NoError(t, err)
-		assert.True(t, ok)
 		assert.Equal(t, 99, val)
 
-		val, ok, err = chunkflow.New(ctx).Seq(seq.Items[int]()).First()
-		require.NoError(t, err)
-		assert.False(t, ok)
+		val, err = chunkflow.New(ctx).Seq(seq.Items[int]()).First()
+		require.ErrorIs(t, err, chunkflow.ErrEmpty)
 		assert.Equal(t, 0, val)
 	})
 
 	t.Run("First propagates error", func(t *testing.T) {
 		boom := errors.New("boom")
-		_, ok, err := chunkflow.
+		_, err := chunkflow.
 			New(ctx).Seq(seq.Items(1)).
 			MapCtx(func(context.Context, int) (int, error) { return 0, boom }).
 			First()
 		require.ErrorIs(t, err, boom)
-		assert.False(t, ok)
+		assert.NotErrorIs(t, err, chunkflow.ErrEmpty, "a failure is not emptiness")
 	})
 
-	t.Run("Last returns final element", func(t *testing.T) {
-		val, ok, err := chunkflow.New(ctx).Seq(seq.Items(1, 2, 99)).Last()
+	t.Run("Last returns final element or ErrEmpty", func(t *testing.T) {
+		val, err := chunkflow.New(ctx).Seq(seq.Items(1, 2, 99)).Last()
 		require.NoError(t, err)
-		assert.True(t, ok)
 		assert.Equal(t, 99, val)
+
+		val, err = chunkflow.New(ctx).Seq(seq.Items[int]()).Last()
+		require.ErrorIs(t, err, chunkflow.ErrEmpty)
+		assert.Equal(t, 0, val)
+	})
+
+	t.Run("Last propagates error and drops the values seen before it", func(t *testing.T) {
+		boom := errors.New("boom")
+		val, err := chunkflow.
+			New(ctx).Seq(seq.Items(1, 2, 3)).
+			MapCtx(func(_ context.Context, i int) (int, error) {
+				if i == 3 {
+					return 0, boom
+				}
+				return i, nil
+			}).
+			Last()
+		require.ErrorIs(t, err, boom)
+		require.NotErrorIs(t, err, chunkflow.ErrEmpty)
+		assert.Equal(t, 0, val, "no partial result on failure")
+	})
+
+	t.Run("ErrEmpty is not reported to WithOnError and only suppressed errors count as empty", func(t *testing.T) {
+		var seen []error
+		s := chunkflow.New(ctx).Seq(seq.Range(0, 3)).
+			Opts(chunkflow.WithOnError(func(err error) { seen = append(seen, err) })).
+			MapCtx(func(context.Context, int) (int, error) { return 0, errors.New("always") }).
+			CircuitBreaker(10)
+
+		_, err := s.First()
+		require.ErrorIs(t, err, chunkflow.ErrEmpty)
+		_, err = s.Last()
+		require.ErrorIs(t, err, chunkflow.ErrEmpty)
+
+		require.Len(t, seen, 6, "three suppressed errors per terminal")
+		for _, e := range seen {
+			require.ErrorIs(t, e, chunkflow.ErrSuppressed)
+			require.NotErrorIs(t, e, chunkflow.ErrEmpty)
+		}
 	})
 
 	t.Run("Seq exposes iter.Seq2 and stops after first error", func(t *testing.T) {

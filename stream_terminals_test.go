@@ -32,13 +32,13 @@ func TestStream_Exec(t *testing.T) {
 		err := chunkflow.
 			New(ctx).Seq(seq.Range(0, 5)).
 			Map(func(i int) int { seen++; return i }).
-			Exec()
+			Drain()
 		require.NoError(t, err)
 		assert.Equal(t, 5, seen)
 	})
 
 	t.Run("is a no-op on an empty stream", func(t *testing.T) {
-		require.NoError(t, chunkflow.New(ctx).Seq(seq.Items[int]()).Exec())
+		require.NoError(t, chunkflow.New(ctx).Seq(seq.Items[int]()).Drain())
 	})
 
 	t.Run("returns the first upstream error and stops consuming", func(t *testing.T) {
@@ -46,7 +46,7 @@ func TestStream_Exec(t *testing.T) {
 		err := chunkflow.
 			New(ctx).Seq2(errAfter(3, errBoom)).
 			Map(func(i int) int { pulled++; return i }).
-			Exec()
+			Drain()
 		require.ErrorIs(t, err, errBoom)
 		assert.Equal(t, 3, pulled)
 	})
@@ -54,7 +54,7 @@ func TestStream_Exec(t *testing.T) {
 	t.Run("returns a cancelled context as error", func(t *testing.T) {
 		cctx, cancel := context.WithCancel(ctx)
 		cancel()
-		require.ErrorIs(t, chunkflow.New(cctx).Seq(seq.Numbers(0)).Exec(), context.Canceled)
+		require.ErrorIs(t, chunkflow.New(cctx).Seq(seq.Numbers(0)).Drain(), context.Canceled)
 	})
 }
 
@@ -229,9 +229,8 @@ func TestStream_PredicateErrors(t *testing.T) {
 				}
 			}
 		})
-		v, ok, err := src.FilterCtx(func(_ context.Context, i int) (bool, error) { return i >= 2, nil }).First()
+		v, err := src.FilterCtx(func(_ context.Context, i int) (bool, error) { return i >= 2, nil }).First()
 		require.NoError(t, err)
-		assert.True(t, ok)
 		assert.Equal(t, 2, v)
 		assert.Equal(t, 3, pulled)
 	})

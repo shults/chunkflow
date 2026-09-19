@@ -191,7 +191,7 @@ func TestStream_TerminalsSkipSuppressedErrors(t *testing.T) {
 	})
 
 	t.Run("Exec and Reduce", func(t *testing.T) {
-		require.NoError(t, tolerant(ctx).Exec())
+		require.NoError(t, tolerant(ctx).Drain())
 
 		sum, err := tolerant(ctx).Reduce(0, func(acc, item int) int { return acc + item })
 		require.NoError(t, err)
@@ -216,14 +216,12 @@ func TestStream_TerminalsSkipSuppressedErrors(t *testing.T) {
 		// make the very first items fail so First has to skip suppressed errors
 		s := chunkflow.New(ctx).Seq(seq.Range(2, 10)).MapCtx(failing).CircuitBreaker(100)
 
-		first, ok, err := s.First()
+		first, err := s.First()
 		require.NoError(t, err)
-		assert.True(t, ok)
 		assert.Equal(t, 5, first)
 
-		last, ok, err := tolerant(ctx).Last()
+		last, err := tolerant(ctx).Last()
 		require.NoError(t, err)
-		assert.True(t, ok)
 		assert.Equal(t, 9, last)
 	})
 

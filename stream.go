@@ -85,7 +85,7 @@ type Builder struct {
 // New starts building a Stream bound to ctx. Pipeline options are set on the stream
 // with Opts, step options on the individual *Ctx call:
 //
-//	chunkflow.New(ctx).Chan(jobs).Opts(chunkflow.WithParallel(8)).MapCtx(process).Exec()
+//	chunkflow.New(ctx).Chan(jobs).Opts(chunkflow.WithParallel(8)).MapCtx(process).Drain()
 func New(ctx context.Context) Builder {
 	return Builder{ctx: ctx}
 }
@@ -165,6 +165,13 @@ func (s Stream[T]) Map[R any](mapFn func(T) R) Stream[R] {
 // MapCtx transforms each element using a context-aware function that may fail.
 // With WithParallel(n > 1) elements are processed by n workers and the output order
 // is not guaranteed. The first error terminates the stream.
+//
+// Shutdown is not instantaneous: when a terminal stops because of a fatal error (or
+// a consumer breaks out of Seq), workers that are already inside mapFn finish that
+// call, and items pulled from the source into the pool's buffer may still be handed
+// to mapFn before the pool notices the cancellation. Up to n calls may therefore run
+// after the terminal has returned; their results are discarded. A callback with side
+// effects must tolerate this, or check ctx before acting.
 func (s Stream[T]) MapCtx[R any](mapFn func(ctx context.Context, item T) (R, error), opts ...StepOption) Stream[R] {
 	o := s.getOptions(opts...)
 	if o.err != nil {
@@ -207,7 +214,8 @@ func (s Stream[T]) Tap(fn func(T)) Stream[T] {
 // TapCtx invokes a context-aware fn for every value and passes the value through
 // unchanged. An error returned by fn replaces the value with that error in the
 // stream. With WithParallel(n > 1) fn runs on n workers and the output order is not
-// guaranteed, exactly as for MapCtx.
+// guaranteed, exactly as for MapCtx; so is the shutdown behaviour documented there,
+// which matters most here because TapCtx exists for side effects.
 func (s Stream[T]) TapCtx(fn func(ctx context.Context, item T) error, opts ...StepOption) Stream[T] {
 	return s.MapCtx(func(ctx context.Context, item T) (T, error) {
 		return item, fn(ctx, item)
@@ -223,7 +231,9 @@ func (s Stream[T]) Filter(predicate func(T) bool) Stream[T] {
 
 // FilterCtx emits only the elements for which the context-aware predicate returns true.
 // With WithParallel(n > 1) predicates are evaluated by n workers and the output order
-// is not guaranteed. The first error terminates the stream.
+// is not guaranteed, and after a fatal error the pool may still evaluate the predicate
+// on up to n buffered items before it shuts down (see MapCtx). The first error
+// terminates the stream.
 func (s Stream[T]) FilterCtx(predicate func(ctx context.Context, item T) (bool, error), opts ...StepOption) Stream[T] {
 	o := s.getOptions(opts...)
 	if o.err != nil {
@@ -589,8 +599,9 @@ func (s Stream[T]) Count() (int, error) {
 	return n, err
 }
 
-// Exec exhausts the stream, discarding values, and returns the first error.
-func (s Stream[T]) Exec() error {
+// Drain exhausts the stream, discarding values, and returns the first error. It is the
+// terminal for pipelines whose work happens in TapCtx or MapCtx side effects.
+func (s Stream[T]) Drain() error {
 	return s.each(func(T) (bool, error) { return true, nil })
 }
 
@@ -671,30 +682,42 @@ func (s Stream[T]) AnyCtx(predicate func(ctx context.Context, item T) (bool, err
 	return found, nil
 }
 
-// First consumes at most one element. Returns (zero, false, nil) for an empty stream.
-func (s Stream[T]) First() (T, bool, error) {
+// First returns the first value and stops pulling from the source. It returns ErrEmpty
+// when the stream ends without a value, and the fatal error if one comes first.
+func (s Stream[T]) First() (T, error) {
 	var first T
 	ok := false
 	err := s.each(func(item T) (bool, error) {
 		first, ok = item, true
 		return false, nil
 	})
-	if err != nil {
+	switch {
+	case err != nil:
 		var zero T
-		return zero, false, err
+		return zero, err
+	case !ok:
+		return first, ErrEmpty
 	}
-	return first, ok, nil
+	return first, nil
 }
 
-// Last consumes the entire stream and returns the final element.
-func (s Stream[T]) Last() (T, bool, error) {
+// Last consumes the entire stream and returns its final value. It returns ErrEmpty
+// when the stream ends without a value, and the fatal error if one occurs.
+func (s Stream[T]) Last() (T, error) {
 	var last T
 	ok := false
 	err := s.each(func(item T) (bool, error) {
 		last, ok = item, true
 		return true, nil
 	})
-	return last, ok, err
+	switch {
+	case err != nil:
+		var zero T
+		return zero, err
+	case !ok:
+		return last, ErrEmpty
+	}
+	return last, nil
 }
 
 // ---------------------------------------------------------------------------

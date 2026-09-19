@@ -145,12 +145,11 @@ func TestStream_SkipWhile(t *testing.T) {
 
 	t.Run("stops pulling once the consumer is done", func(t *testing.T) {
 		pulled := 0
-		v, ok, err := chunkflow.New(ctx).Seq(seq.Numbers(0)).
+		v, err := chunkflow.New(ctx).Seq(seq.Numbers(0)).
 			Tap(func(int) { pulled++ }).
 			SkipWhile(lt4).
 			First()
 		require.NoError(t, err)
-		assert.True(t, ok)
 		assert.Equal(t, 4, v)
 		assert.Equal(t, 5, pulled)
 	})

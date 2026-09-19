@@ -70,12 +70,11 @@ func TestStream_Compact(t *testing.T) {
 
 	t.Run("stops pulling once the consumer is done", func(t *testing.T) {
 		pulled := 0
-		v, ok, err := chunkflow.New(ctx).Seq(seq.Const(7)).
+		v, err := chunkflow.New(ctx).Seq(seq.Const(7)).
 			Tap(func(int) { pulled++ }).
 			Through(chunkflow.Compact).
 			First()
 		require.NoError(t, err)
-		assert.True(t, ok)
 		assert.Equal(t, 7, v)
 		assert.Equal(t, 1, pulled)
 	})

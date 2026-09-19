@@ -47,7 +47,7 @@ func TestStream_NoGoroutineLeaks(t *testing.T) {
 	t.Run("consumer short-circuits after parallel FilterCtx on infinite source", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
 
-		val, ok, err := chunkflow.
+		val, err := chunkflow.
 			New(ctx).Seq(seq.Numbers(0)).
 			FilterCtx(func(_ context.Context, i int) (bool, error) {
 				return i%7 == 0, nil
@@ -56,7 +56,6 @@ func TestStream_NoGoroutineLeaks(t *testing.T) {
 			First()
 
 		require.NoError(t, err)
-		assert.True(t, ok)
 		assert.Equal(t, 0, val%7)
 	})
 

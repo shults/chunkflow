@@ -93,6 +93,12 @@ new convention is introduced or an old one is changed; a convention without a re
 - `Take(n)` / `Skip(n)` count values, not errors. `TakeWhile` stops pulling at the first `false`
   and therefore never sees errors that come after it.
 - `Compact` removes only *adjacent* duplicates (input must be sorted or grouped), in O(1) memory.
+- `First` / `Last` return `(T, error)` and signal a stream without values with the `ErrEmpty`
+  sentinel, not with a `bool`. *Why:* the function returns an error anyway, so a third return
+  value forces two checks where one suffices, and std signals expected absence from an
+  error-returning function with a sentinel (`sql.ErrNoRows`, `io.EOF`, `fs.ErrNotExist`); the
+  `(v, ok)` form is for functions that cannot fail (maps, `iter.Pull`). `ErrEmpty` is not an element
+  error and never reaches `WithOnError`.
 - `Chan` streams are single-use and stopping early does not close or drain the channel.
 - Combinators over several `Stream`s (`Concat`, `Merge`) take values and deadline from the
   first stream's context and are cancelled by any stream's context, with the original cause kept.

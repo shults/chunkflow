@@ -163,11 +163,11 @@ together with whatever was produced so far.
 | `ForEach` / `ForEachCtx` | `error` | Side effect per element. |
 | `Reduce[R](init R, func(acc R, item T) R)` / `ReduceCtx` | `(R, error)` | Fold into an accumulator of any type, `(acc, item)` order, `init` first. Always sequential. |
 | `Count()` | `(int, error)` | |
-| `Exec()` | `error` | Drains the stream, discards values. |
+| `Drain()` | `error` | Exhausts the stream, discards values; the terminal for side-effect pipelines. |
 | `All` / `AllCtx` | `(bool, error)` | Short-circuits on the first mismatch. **Empty stream: `true`** (vacuous truth). |
 | `Any` / `AnyCtx` | `(bool, error)` | Short-circuits on the first match. **Empty stream: `false`.** |
-| `First()` | `(T, bool, error)` | |
-| `Last()` | `(T, bool, error)` | |
+| `First()` | `(T, error)` | Stops the source after one value. **Empty stream: `ErrEmpty`.** |
+| `Last()` | `(T, error)` | **Empty stream: `ErrEmpty`.** |
 | `Seq()` | `iter.Seq2[T, error]` | The pipeline as a native iterator, suppressed errors included; stops after the first fatal one. |
 
 ### Options
@@ -205,6 +205,9 @@ for v, err := range stream.CircuitBreaker(5).Seq() {
 - A pipeline without `CircuitBreaker` is fail-fast: the source is not consumed past the failing
   element.
 - Cancelling the context always surfaces as an error, also when a worker pool exits without emitting.
+- `First` and `Last` on a stream without values return `ErrEmpty`. It is a plain sentinel for "nothing
+  to return", not a failure: it never reaches `WithOnError`, and `errors.Is(err, ErrEmpty)` tells it
+  apart from the errors above.
 
 ## Development
 

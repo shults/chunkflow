@@ -75,7 +75,7 @@ func TestStream_MergeContexts(t *testing.T) {
 			done <- chunkflow.Merge(
 				chunkflow.New(ctx).Seq(seq.Numbers(0)),      // head: never cancelled
 				chunkflow.New(otherCtx).Seq(seq.Numbers(0)), // cancelled below
-			).Tap(func(int) { seen.Add(1) }).Exec()
+			).Tap(func(int) { seen.Add(1) }).Drain()
 		}()
 		require.Eventually(t, func() bool { return seen.Load() > 10 }, 2*time.Second, time.Millisecond)
 		cancel()
@@ -98,7 +98,7 @@ func TestStream_MergeContexts(t *testing.T) {
 			chunkflow.New(ctx).Seq(seq.Numbers(0)),
 			chunkflow.New(ctx2).Seq(seq.Numbers(0)),
 			chunkflow.New(ctx3).Seq(seq.Numbers(0)),
-		).Exec()
+		).Drain()
 		require.ErrorIs(t, err, context.Canceled)
 	})
 
@@ -110,7 +110,7 @@ func TestStream_MergeContexts(t *testing.T) {
 		err := chunkflow.Merge(
 			chunkflow.New(ctx).Seq(seq.Numbers(0)),
 			chunkflow.New(deadlineCtx).Seq(seq.Numbers(0)),
-		).Exec()
+		).Drain()
 		require.ErrorIs(t, err, context.DeadlineExceeded, "must not be flattened into Canceled")
 	})
 
@@ -235,7 +235,7 @@ func TestStream_Merge(t *testing.T) {
 			err := chunkflow.Merge(
 				chunkflow.New(cctx).Seq(seq.Numbers(0)),
 				chunkflow.New(cctx).Seq(seq.Numbers(0)),
-			).Tap(func(int) { seen.Add(1) }).Exec()
+			).Tap(func(int) { seen.Add(1) }).Drain()
 			done <- err
 		}()
 		require.Eventually(t, func() bool { return seen.Load() > 10 }, 2*time.Second, time.Millisecond)
