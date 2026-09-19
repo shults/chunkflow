@@ -108,8 +108,33 @@ Ideas without a decision. They enter a phase only with a concrete use case.
   `seq.Pairs(iter.Seq2[K, V]) iter.Seq[tuple.Pair[K, V]]` for any `Seq2` source and
   `seq.KVPairs(map[K]V)` so callers need not import `maps` (iteration order is random — say so).
   ~~`KVStream`~~ was dropped: a dedicated type for a handful of helpers is not worth it
-- **step decorators** (`Retry`, `Timeout`, `SuppressErrors(target)`, rate limiting): the second
-  extension family next to policies, see CONVENTIONS.md. A decorator wraps the callback itself,
+- **step decorators**: prototyped in `step` as `Decorate(fn, mws...)` / `Decorate3(fn, mws...)`
+  over `Middleware func(ctx, call func(ctx) error) error`, with `Retry(attempts, opts...)`,
+  `Timeout(d)`, `Tolerate(targets...)`; 100% covered. `Retry` is the middleware and the pacing is
+  its injected strategy: `RetryWithBackoff(newBackoff)` over the `Backoff` interface with the
+  method set of `cenkalti/backoff` (`NextBackOff() time.Duration`, `Reset()`, `Stop = -1`), so
+  its strategies or anyone else's plug in unchanged and the module takes no dependency. No stock
+  strategies of our own: `Constant` and `Exponential` were written and removed, pacing is a solved
+  problem elsewhere and every exported name must defend its place. `NextBackOff` is stateful, so the option takes a
+  constructor, `func() Backoff` (a concrete constructor such as `backoff.NewExponentialBackOff` is
+  wrapped in a one-line closure; a generic option was tried and dropped as not worth a type
+  parameter), and every series of attempts, i.e. every element, gets a fresh, reset instance:
+  nothing is shared between workers. Whether it
+  ships in this module or moves to its own is open. Findings that changed the earlier notes:
+  - the list shape *does* compile once middlewares are non-generic: a middleware sees only the
+    context and the error, the values stay in the decorator's closure, so `Retry(3, nil)` needs no
+    type arguments and `Decorate` infers `T, R` from `fn`. Reflection was considered for arity
+    erasure and rejected: closures do it at zero cost and keep compile-time checking
+  - arity is handled by one decorator per callback shape (`Decorate`, `Decorate3`), not by adapters;
+    the middlewares are shared. A third shape (`func(ctx, T) error`) is ten more lines when needed
+  - "skip this element" is a suppressed error coming out of the chain; the decorator knows what
+    that means for its shape (`Decorate`: return the marked error; `Decorate3`: return the
+    accumulator unchanged and no error, because a terminal treats any callback error as fatal)
+  - a retried fold callback gets the same accumulator every attempt; a reference-type accumulator
+    may carry the failed attempt's mutations, so mutate after the fallible work
+  - "never retry context errors" is wrong as stated: an inner `Timeout` yields `DeadlineExceeded`
+    that *should* be retried; the rule is "never retry once the *caller's* context is done"
+  Original findings follow. The second extension family next to policies, see CONVENTIONS.md. A decorator wraps the callback itself,
   `func(ctx, T) (R, error)` in and out, so it can re-run or bound a call; a policy on the stream
   cannot. It needs nothing from the root, the callback signature is plain Go, so it is its own
   package (`step`, not `middlewares`: singular, short, and "middleware" promises request/response

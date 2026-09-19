@@ -172,6 +172,25 @@ spelled out.
 | --- | --- |
 | `policy.CircuitBreaker[T](n)` | Tolerates up to `n-1` errors in a row by re-emitting them marked `ErrSuppressed`; trips on the `n`-th. Never tolerates context errors or `ErrPanic`. |
 
+Step decorators in the `step` sub-package wrap the callback itself instead of the stream, so they
+see the individual call and can repeat or bound it, which a policy cannot. A `step.Middleware`
+sees only the context and the error of one call, values stay in a closure, so one set of them
+serves every callback shape without type arguments. `Decorate` applies them to a
+`func(ctx, T) (R, error)`, `Decorate3` to a fold callback `func(ctx, Acc, T) (Acc, error)`; the
+first middleware in the list is the outermost.
+
+| | |
+| --- | --- |
+| `step.Retry(attempts, opts...)` | Repeats a failed call up to `attempts` times, immediately or paced by `step.RetryWithBackoff(newBackoff)`, where the constructor returns anything with the `NextBackOff() / Reset()` method set of `cenkalti/backoff`, created fresh per element. The package ships no pacing of its own and takes no dependency. Never past a done caller context or an error marked by `Suppress`; a timeout from an inner `step.Timeout` is retried. |
+| `step.Timeout(d)` | Runs the call with a context that expires after `d`. Cooperative: the callback must honour its context. |
+| `step.Tolerate(targets...)` | `Suppress` for callbacks you do not own: an error matching any target skips the element. In `Decorate` that is the marked error; in `Decorate3` the fold keeps its accumulator and carries on. |
+
+```go
+users.MapCtx(step.Decorate(fetch, step.Retry(3, step.RetryWithBackoff(newBackoff)), step.Timeout(2*time.Second)),
+        chunkflow.WithParallel(8)).
+    Through(policy.CircuitBreaker[User](5))   // 3 attempts of 2s per element, then a breaker over 5 elements in a row
+```
+
 Writing your own: `Stream.Transform[R](func(iter.Seq2[T, error]) iter.Seq2[R, error]) Stream[R]`
 gives a function the raw element sequence, fatal errors included and without stopping at them,
 and wraps the result back into a stream with the same context and options. Mark what you tolerate
