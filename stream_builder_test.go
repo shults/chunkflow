@@ -35,8 +35,8 @@ func TestIoBuilder(t *testing.T) {
 			}
 		}()
 
-		res, err := chunkflow.New(ctx, chunkflow.WithParallel(workers)).
-			Seq(seq.Range(0, workers)).
+		res, err := chunkflow.New(ctx).Seq(seq.Range(0, workers)).
+			Opts(chunkflow.WithParallel(workers)).
 			MapCtx(func(_ context.Context, i int) (int, error) {
 				entered.Add(1)
 				<-gate
@@ -182,8 +182,10 @@ func TestIoBuilder_Chan(t *testing.T) {
 			}
 		}()
 
-		res, err := chunkflow.New(cctx, chunkflow.WithParallel(3)).
+		res, err := chunkflow.
+			New(cctx).
 			Chan(jobs).
+			Opts(chunkflow.WithParallel(3)).
 			MapCtx(func(_ context.Context, i int) (int, error) { return i * 2, nil }).
 			Take(10).
 			Collect()

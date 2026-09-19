@@ -28,9 +28,9 @@ the reason, so the question is not reopened by accident.
 
 Goal: fix the shapes that are awkward now, while nobody depends on them, then freeze.
 
-- [ ] `New(ctx)` without options. `New(ctx, opts...)` and `Stream.Opts(opts...)` are two ways to do
+- [x] `New(ctx)` without options. `New(ctx, opts...)` and `Stream.Opts(opts...)` were two ways to do
       one thing; the source methods (`Seq`, `Seq2`, `Chan`) use no options, so nothing is lost by
-      `New(ctx).Chan(ch).Opts(WithParallel(8))`. The builder then holds only the context
+      `New(ctx).Chan(ch).Opts(WithParallel(8))`. The builder now holds only the context
 - [ ] `WithOrdered()` option for `MapCtx` / `FilterCtx` / `TapCtx` — preserve input order under
       `WithParallel(n > 1)`
   - sliding window: `n` workers pull freely, but results are emitted strictly in source order;

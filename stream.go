@@ -31,14 +31,14 @@ type Stream[T any] struct {
 	seq     iter.Seq[result[T]]
 }
 
-// Option configures a whole pipeline. Pass it to New or Opts; every operation
-// downstream inherits it. Every StepOption is also an Option.
+// Option configures a whole pipeline. Pass it to Opts; every operation downstream
+// inherits it. Every StepOption is also an Option.
 type Option interface {
 	applyPipeline(*options)
 }
 
 // StepOption configures a single *Ctx call, e.g. MapCtx(fn, WithParallel(8)). Passing it
-// to New or Opts instead makes it the default for the whole pipeline.
+// to Opts instead makes it the default for everything downstream.
 type StepOption func(*options)
 
 func (f StepOption) applyPipeline(o *options) { f(o) }
@@ -75,24 +75,19 @@ func WithOnError(fn func(error)) Option {
 	})
 }
 
-// Builder binds a context and default options before the element type is known.
-// Obtain one with New and turn it into an Stream with Seq, Seq2 or Chan; each of
-// those is a generic method, so the element type is inferred from the source.
+// Builder binds a context before the element type is known. Obtain one with New and
+// turn it into a Stream with Seq, Seq2 or Chan; each of those is a generic method, so
+// the element type is inferred from the source.
 type Builder struct {
-	options options
-	ctx     context.Context
+	ctx context.Context
 }
 
-// New starts building an Stream bound to ctx. The options become the defaults of
-// every operation in the resulting pipeline (see Opts):
+// New starts building a Stream bound to ctx. Pipeline options are set on the stream
+// with Opts, step options on the individual *Ctx call:
 //
-//	chunkflow.New(ctx, chunkflow.WithParallel(8)).Chan(jobs).MapCtx(process).Exec()
-func New(ctx context.Context, opts ...Option) Builder {
-	o := defaultOptions()
-	for _, opt := range opts {
-		opt.applyPipeline(&o)
-	}
-	return Builder{options: o, ctx: ctx}
+//	chunkflow.New(ctx).Chan(jobs).Opts(chunkflow.WithParallel(8)).MapCtx(process).Exec()
+func New(ctx context.Context) Builder {
+	return Builder{ctx: ctx}
 }
 
 // Seq wraps a native Go iterator. The context is checked before every element is
@@ -918,13 +913,9 @@ func (s Stream[T]) each(fn func(T) (bool, error)) (err error) {
 	return nil
 }
 
-// stream assembles an Stream from the builder's context and options. An invalid option
-// given to New surfaces here as a stream emitting that error.
+// stream assembles a Stream from the builder's context with default options.
 func (b Builder) stream[T any](seq iter.Seq[result[T]]) Stream[T] {
-	if b.options.err != nil {
-		seq = func(yield func(result[T]) bool) { yield(result[T]{err: b.options.err}) }
-	}
-	return Stream[T]{options: b.options, ctx: b.ctx, seq: seq}
+	return Stream[T]{options: defaultOptions(), ctx: b.ctx, seq: seq}
 }
 
 // mapCtxConcurrent is the WithParallel(n > 1) path of MapCtx and FilterCtx,

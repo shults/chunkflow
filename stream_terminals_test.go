@@ -143,9 +143,9 @@ func TestStream_ReduceCtx(t *testing.T) {
 
 	t.Run("folds sequentially in source order", func(t *testing.T) {
 		var order []int
-		total, err := chunkflow.New(ctx, chunkflow.WithParallel(8)). // pipeline default must not leak into the fold
-										Seq(seq.Range(0, 5)).
-										ReduceCtx(0, func(_ context.Context, acc, item int) (int, error) {
+		total, err := chunkflow.New(ctx).Seq(seq.Range(0, 5)).
+			Opts(chunkflow.WithParallel(8)). // pipeline default must not leak into the fold
+			ReduceCtx(0, func(_ context.Context, acc, item int) (int, error) {
 				order = append(order, item)
 				return acc + item, nil
 			})

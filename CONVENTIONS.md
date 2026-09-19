@@ -26,8 +26,11 @@ new convention is introduced or an old one is changed; a convention without a re
 - **`Merge` vs `Concat`**: `Concat` is sequential and deterministic, `Merge` is a concurrent fan-in
   with interleaved order. Not `MergeOrdered` / `MergeUnordered`: "ordered merge" reads as the
   merge-sort step over sorted inputs.
-- **Constructors**: the `New(ctx, opts...)` builder with `Seq`, `Seq2`, `Chan`. *Why:* the builder binds context and default options before the element
-  type is known, and each source kind is one generic method instead of one more top-level `New*`.
+- **Constructors**: the `New(ctx)` builder with `Seq`, `Seq2`, `Chan`. *Why:* the builder binds
+  the context before the element type is known, and each source kind is one generic method
+  instead of one more top-level `New*`. `New` takes no options: `Opts` on the stream is the only
+  place for pipeline options, so there is one way to set them and the builder holds nothing but
+  the context.
   There are no convenience constructors (`FromItems`, `Range`, ...) in the root package; generators
   live in `seq` and return plain `iter.Seq`, so they also work with `slices.Collect` and `range`.
 
@@ -62,15 +65,15 @@ new convention is introduced or an old one is changed; a convention without a re
   a second error policy shows up; `Zip3` is not added until someone needs it; there is no `Distinct`
   because a global "seen" set belongs to the user's store, not inside the pipeline
   (see `ExampleStream_Chunk_deduplication`).
-- **Two option kinds, checked by the compiler.** `Option` configures a whole pipeline (`New`,
-  `Opts`) and is inherited downstream; `StepOption` configures one `*Ctx` call and is also an
+- **Two option kinds, checked by the compiler.** `Option` configures a whole pipeline (`Opts`)
+  and is inherited downstream; `StepOption` configures one `*Ctx` call and is also an
   `Option`. `WithParallel` is a `StepOption`, `WithOnError` a pipeline-only `Option`, so
   `MapCtx(fn, WithOnError(...))` and `ReduceCtx(init, fn, WithParallel(4))` do not compile.
   *Why:* an accepted-but-ignored option is a silent bug; the earlier single `Option` type needed a
   logged warning for exactly that case, and the logger existed for nothing else.
 - **Invalid option values are not panics and not nil checks.** `WithParallel(0)` or
   `WithOnError(nil)` record an error in the options; the first operation that consumes them
-  (`Opts`, the builder's source method, a `*Ctx` step) emits that error and ends. Defaults are
+  (`Opts` or a `*Ctx` step) emits that error and ends. Defaults are
   real values (`onError` is a no-op func), so hot paths never test for nil.
 - **No logger in the API.** Observability of tolerated errors goes through `WithOnError` (or a
   manual loop over `Seq()`), never through a library-owned `slog.Logger`. *Why:* the library has

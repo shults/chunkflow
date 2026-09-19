@@ -77,12 +77,12 @@ func main() {
     // Tolerating errors: CircuitBreaker(3) lets two failures in a row through and trips on the third.
     // Tolerated errors are still visible through Seq() or the WithOnError hook.
     tolerated := 0
-    nums, err = chunkflow.New(ctx, chunkflow.WithOnError(func(err error) {
+    nums, err = chunkflow.New(ctx).Seq(seq.Items("1", "x", "3", "y", "5")).
+        Opts(chunkflow.WithOnError(func(err error) {
             if errors.Is(err, chunkflow.ErrSuppressed) {
                 tolerated++
             }
         })).
-        Seq(seq.Items("1", "x", "3", "y", "5")).
         MapCtx(parse).
         CircuitBreaker(3).
         Collect()
@@ -97,11 +97,12 @@ More runnable examples, one per operation, are in `*_example_test.go` and on
 
 ### Building a stream
 
-`New` binds the context and pipeline options first; the source method picks the element type.
+`New` binds the context; the source method picks the element type. Options come afterwards,
+through `Opts` on the stream or on the individual `*Ctx` call.
 
 | | |
 | --- | --- |
-| `New(ctx, ...Option)` | Starts a `Stream` bound to `ctx`. |
+| `New(ctx)` | Starts a `Stream` bound to `ctx`. |
 | `.Seq(iter.Seq[T])` | Wraps a native iterator. The context is checked before every element. |
 | `.Seq2(iter.Seq2[T, error])` | Wraps a `(value, error)` iterator, the inverse of `Stream.Seq()`. |
 | `.Chan(<-chan T)` | Reads a channel until it is closed or the context is cancelled. Single-use; stopping early does not close or drain the channel. |
@@ -173,8 +174,8 @@ together with whatever was produced so far.
 
 Two kinds, checked by the compiler:
 
-- `StepOption` configures one `*Ctx` call: `WithParallel(n)`. Passing it to `New` or `Opts` makes it
-  the default for the whole pipeline.
+- `StepOption` configures one `*Ctx` call: `WithParallel(n)`. Passing it to `Opts` makes it the
+  default for everything downstream.
 - `Option` configures the whole pipeline only: `WithOnError(fn)` registers the hook every terminal
   calls for each error it handles, suppressed ones just before skipping them, the fatal one just
   before returning it. It is the place for logging and metrics.

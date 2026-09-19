@@ -273,8 +273,8 @@ func TestStream_Options(t *testing.T) {
 	t.Run("WithOnError sees terminal callback errors too", func(t *testing.T) {
 		errCb := errors.New("callback")
 		var seen []error
-		err := chunkflow.New(ctx, chunkflow.WithOnError(func(err error) { seen = append(seen, err) })).
-			Seq(seq.Items(1, 2)).
+		err := chunkflow.New(ctx).Seq(seq.Items(1, 2)).
+			Opts(chunkflow.WithOnError(func(err error) { seen = append(seen, err) })).
 			ForEachCtx(func(context.Context, int) error { return errCb })
 		require.ErrorIs(t, err, errCb)
 		assert.Equal(t, []error{errCb}, seen)
@@ -282,7 +282,8 @@ func TestStream_Options(t *testing.T) {
 
 	t.Run("WithOnError is inherited through derived streams", func(t *testing.T) {
 		calls := 0
-		_, err := chunkflow.New(ctx, chunkflow.WithOnError(func(error) { calls++ })).Seq(seq.Range(0, 5)).
+		_, err := chunkflow.New(ctx).Seq(seq.Range(0, 5)).
+			Opts(chunkflow.WithOnError(func(error) { calls++ })).
 			MapCtx(failing). // 2,3,4 fail
 			CircuitBreaker(100).
 			Skip(0).
@@ -297,10 +298,7 @@ func TestStream_Options(t *testing.T) {
 		_, err := src().Opts(chunkflow.WithOnError(nil)).Collect()
 		require.ErrorContains(t, err, "WithOnError: nil callback")
 
-		_, err = chunkflow.New(ctx, chunkflow.WithOnError(nil)).Seq(seq.Items(1)).Collect()
-		require.ErrorContains(t, err, "WithOnError: nil callback")
-
-		_, err = chunkflow.New(ctx, chunkflow.WithParallel(0)).Chan(make(chan int)).Collect()
+		_, err = chunkflow.New(ctx).Chan(make(chan int)).Opts(chunkflow.WithParallel(0)).Collect()
 		require.ErrorContains(t, err, "concurrency must be at least 1", "reported even though the channel would block")
 
 		_, err = src().Opts(chunkflow.WithParallel(-1)).Collect()

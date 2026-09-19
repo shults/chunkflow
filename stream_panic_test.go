@@ -52,8 +52,10 @@ func TestStream_PanicsBecomeErrors(t *testing.T) {
 		var blocked, released atomic.Int32
 		panicked := make(chan struct{})
 
-		_, err := chunkflow.New(ctx).Seq(seq.Numbers(0)). // infinite source
-									MapCtx(func(ctx context.Context, i int) (int, error) {
+		_, err := chunkflow.
+			New(ctx).
+			Seq(seq.Numbers(0)). // infinite source
+			MapCtx(func(ctx context.Context, i int) (int, error) {
 				if i == 0 {
 					// let the other workers park in their callbacks before blowing up
 					require.Eventually(t, func() bool { return blocked.Load() == workers-1 }, 2*time.Second, time.Millisecond)
@@ -84,8 +86,10 @@ func TestStream_PanicsBecomeErrors(t *testing.T) {
 
 	t.Run("CircuitBreaker never suppresses a panic and ends the stream", func(t *testing.T) {
 		var reported []error
-		res, err := chunkflow.New(ctx, chunkflow.WithOnError(func(err error) { reported = append(reported, err) })).
+		res, err := chunkflow.
+			New(ctx).
 			Seq(seq.Range(0, 10)).
+			Opts(chunkflow.WithOnError(func(err error) { reported = append(reported, err) })).
 			MapCtx(func(ctx context.Context, i int) (int, error) {
 				if i == 1 {
 					return 0, errBoom // a normal, tolerable error

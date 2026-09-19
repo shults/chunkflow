@@ -17,13 +17,12 @@
 //		Filter(func(i int) bool { return i%2 == 0 }).
 //		Collect()
 //
-//	rows, err := chunkflow.New(ctx, chunkflow.WithParallel(8)).Seq(seq.Items(ids...)).
-//		MapCtx(fetchRow).
+//	rows, err := chunkflow.New(ctx).Seq(seq.Items(ids...)).
+//		MapCtx(fetchRow, chunkflow.WithParallel(8)).
 //		Chunk[[]Row](500).
 //		ForEachCtx(insertBatch)
 //
-// New(ctx, opts...) binds the context and default options first and lets the source
-// pick the element type: Seq wraps an iter.Seq, Seq2 an iter.Seq2[T, error] (the inverse
+// New(ctx) binds the context first and lets the source pick the element type: Seq wraps an iter.Seq, Seq2 an iter.Seq2[T, error] (the inverse
 // of Stream.Seq), Chan a receive channel.
 //
 // # Type-changing operations
@@ -65,8 +64,8 @@
 //
 // Two kinds exist. A StepOption configures one *Ctx call: WithParallel(n) sets the
 // worker count of MapCtx, FilterCtx or TapCtx (default 1; with n > 1 the output order of
-// that step is not guaranteed). An Option configures the whole pipeline through New or
-// Opts and is inherited downstream: every StepOption also works as an Option (a default
+// that step is not guaranteed). An Option configures the whole pipeline through Opts
+// and is inherited downstream: every StepOption also works as an Option (a default
 // worker count), and WithOnError(fn) registers the hook that terminal operations call for
 // every error they handle, suppressed ones included, so logging and metrics need no
 // manual loop over Seq.
