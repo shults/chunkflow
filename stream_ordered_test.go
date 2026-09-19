@@ -108,7 +108,7 @@ func TestStream_Ordered(t *testing.T) {
 				}
 				return i, nil
 			}, chunkflow.WithParallel(workers)).
-			CircuitBreaker(100).
+			Through(chunkflow.CircuitBreaker[int](100)).
 			Seq() {
 			switch {
 			case err == nil:

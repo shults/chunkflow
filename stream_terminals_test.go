@@ -211,7 +211,7 @@ func TestStream_PredicateErrors(t *testing.T) {
 				// predicate fails on 3; upstream source fails after 6 items
 				res, err := chunkflow.New(ctx).Seq2(errAfter(6, errBoom)).
 					FilterCtx(failOn(3), opts...).
-					CircuitBreaker(100).
+					Through(chunkflow.CircuitBreaker[int](100)).
 					Collect()
 				require.NoError(t, err)
 				assert.ElementsMatch(t, []int{0, 1, 2, 4, 5}, res)
@@ -246,7 +246,7 @@ func TestStream_AllAnyEdgeCases(t *testing.T) {
 	onlySuppressed := func() chunkflow.Stream[int] {
 		return chunkflow.New(ctx).Seq(seq.Range(0, 5)).
 			MapCtx(func(context.Context, int) (int, error) { return 0, errBoom }).
-			CircuitBreaker(100)
+			Through(chunkflow.CircuitBreaker[int](100))
 	}
 
 	for name, stream := range map[string]func() chunkflow.Stream[int]{
@@ -333,7 +333,9 @@ func TestStream_FailFastStopsEveryStage(t *testing.T) {
 		"Chunk+Flatten": func(s chunkflow.Stream[int]) chunkflow.Stream[int] {
 			return s.Chunk[[]int](2).Through(chunkflow.Flatten)
 		},
-		"CircuitBreaker(1)": func(s chunkflow.Stream[int]) chunkflow.Stream[int] { return s.CircuitBreaker(1) },
+		"CircuitBreaker(1)": func(s chunkflow.Stream[int]) chunkflow.Stream[int] {
+			return s.Through(chunkflow.CircuitBreaker[int](1))
+		},
 	}
 
 	for name, stage := range stages {
@@ -356,4 +358,101 @@ func TestStream_FailFastStopsEveryStage(t *testing.T) {
 func TestStream_ChunkRejectsInvalidSize(t *testing.T) {
 	_, err := chunkflow.New(t.Context()).Seq(seq.Items(1, 2)).Chunk(0).Collect()
 	require.ErrorContains(t, err, "chunk size must be >= 1")
+}
+
+func TestStream_ReduceBy(t *testing.T) {
+	ctx := t.Context()
+	parity := func(i int) string {
+		if i%2 == 0 {
+			return "even"
+		}
+		return "odd"
+	}
+	appendInt := func(acc []int, i int) []int { return append(acc, i) }
+
+	t.Run("groups in source order and starts every key from init", func(t *testing.T) {
+		groups, err := chunkflow.New(ctx).Seq(seq.Range(0, 7)).ReduceBy(parity, nil, appendInt)
+		require.NoError(t, err)
+		assert.Equal(t, map[string][]int{"even": {0, 2, 4, 6}, "odd": {1, 3, 5}}, groups)
+
+		sums, err := chunkflow.New(ctx).Seq(seq.Range(0, 7)).
+			ReduceBy(parity, 100, func(acc, i int) int { return acc + i })
+		require.NoError(t, err)
+		assert.Equal(t, map[string]int{"even": 112, "odd": 109}, sums, "init is applied per key, not once")
+	})
+
+	t.Run("empty stream gives an empty, usable map", func(t *testing.T) {
+		groups, err := chunkflow.New(ctx).Seq(seq.Items[int]()).ReduceBy(parity, nil, appendInt)
+		require.NoError(t, err)
+		require.NotNil(t, groups)
+		assert.Empty(t, groups)
+	})
+
+	t.Run("error returns the map built so far", func(t *testing.T) {
+		groups, err := chunkflow.New(ctx).Seq2(errAfter(3, errBoom)).ReduceBy(parity, nil, appendInt) // 0,1,2 then boom
+		require.ErrorIs(t, err, errBoom)
+		assert.Equal(t, map[string][]int{"even": {0, 2}, "odd": {1}}, groups)
+	})
+
+	t.Run("suppressed errors are skipped", func(t *testing.T) {
+		groups, err := tolerant(ctx).ReduceBy(parity, nil, appendInt) // 0,1,5,6,7,8,9
+		require.NoError(t, err)
+		assert.Equal(t, map[string][]int{"even": {0, 6, 8}, "odd": {1, 5, 7, 9}}, groups)
+	})
+
+	t.Run("a pipeline-wide WithParallel does not reach the fold", func(t *testing.T) {
+		var order []int
+		_, err := chunkflow.New(ctx).Seq(seq.Range(0, 20)).
+			Opts(chunkflow.WithParallel(8)).
+			ReduceBy(parity, nil, func(acc []int, i int) []int { order = append(order, i); return append(acc, i) })
+		require.NoError(t, err)
+		assert.IsIncreasing(t, order)
+	})
+}
+
+func TestStream_ReduceByCtx(t *testing.T) {
+	ctx := t.Context()
+	key := func(i int) int { return i % 3 }
+
+	t.Run("receives the stream context", func(t *testing.T) {
+		type ctxKey struct{}
+		cctx := context.WithValue(ctx, ctxKey{}, "marker")
+		seen := 0
+		_, err := chunkflow.New(cctx).Seq(seq.Range(0, 3)).
+			ReduceByCtx(key, 0, func(ctx context.Context, acc, i int) (int, error) {
+				if ctx.Value(ctxKey{}) == "marker" {
+					seen++
+				}
+				return acc + i, nil
+			})
+		require.NoError(t, err)
+		assert.Equal(t, 3, seen)
+	})
+
+	t.Run("a callback error stops the fold, keeps the partial map and reaches WithOnError", func(t *testing.T) {
+		var reported []error
+		groups, err := chunkflow.New(ctx).Seq(seq.Range(0, 10)).
+			Opts(chunkflow.WithOnError(func(err error) { reported = append(reported, err) })).
+			ReduceByCtx(key, 0, func(_ context.Context, acc, i int) (int, error) {
+				if i == 4 {
+					return acc, errBoom
+				}
+				return acc + 1, nil
+			})
+		require.ErrorIs(t, err, errBoom)
+		assert.Equal(t, map[int]int{0: 2, 1: 1, 2: 1}, groups, "0,1,2,3 counted; 4 failed and its group keeps the returned acc")
+		assert.Equal(t, []error{errBoom}, reported)
+	})
+
+	t.Run("Suppress inside the fold skips the item but keeps the group", func(t *testing.T) {
+		groups, err := chunkflow.New(ctx).Seq(seq.Range(0, 6)).
+			ReduceByCtx(key, 0, func(_ context.Context, acc, i int) (int, error) {
+				if i == 5 {
+					return acc, chunkflow.Suppress(errBoom)
+				}
+				return acc + 1, nil
+			})
+		require.ErrorIs(t, err, errBoom, "a suppressed error returned by a terminal callback is still the terminal's error")
+		assert.Equal(t, map[int]int{0: 2, 1: 2, 2: 1}, groups)
+	})
 }

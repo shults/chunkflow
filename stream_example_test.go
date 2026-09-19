@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/shults/chunkflow"
@@ -169,7 +170,7 @@ func ExampleStream_Chunk_deduplication() {
 	// <nil>
 }
 
-func ExampleStream_CircuitBreaker() {
+func ExampleCircuitBreaker() {
 	ctx := context.Background()
 	errFlaky := errors.New("flaky")
 
@@ -183,14 +184,14 @@ func ExampleStream_CircuitBreaker() {
 	// Up to 2 consecutive failures are tolerated; the 3rd in a row would trip the breaker.
 	got, err := chunkflow.New(ctx).Seq(seq.Range(1, 7)).
 		MapCtx(fetch).
-		CircuitBreaker(3).
+		Through(chunkflow.CircuitBreaker[int](3)).
 		Collect()
 
 	fmt.Println(got, err)
 	// Output: [10 20 50 60] <nil>
 }
 
-func ExampleStream_CircuitBreaker_tripped() {
+func ExampleCircuitBreaker_tripped() {
 	ctx := context.Background()
 	errDown := errors.New("service down")
 
@@ -203,7 +204,7 @@ func ExampleStream_CircuitBreaker_tripped() {
 
 	got, err := chunkflow.New(ctx).Seq(seq.Numbers(1)). // infinite source
 								MapCtx(fetch).
-								CircuitBreaker(3).
+								Through(chunkflow.CircuitBreaker[int](3)).
 								Collect()
 
 	fmt.Println(got)
@@ -229,7 +230,7 @@ func ExampleStream_Seq() {
 	// Seq exposes suppressed errors instead of hiding them, so the consumer can
 	// count or log what the breaker tolerated.
 	tolerated := 0
-	for v, err := range chunkflow.New(ctx).Seq(seq.Range(0, 6)).MapCtx(rejectOdd).CircuitBreaker(2).Seq() {
+	for v, err := range chunkflow.New(ctx).Seq(seq.Range(0, 6)).MapCtx(rejectOdd).Through(chunkflow.CircuitBreaker[int](2)).Seq() {
 		switch {
 		case err == nil:
 			fmt.Println("value", v)
@@ -309,6 +310,64 @@ func ExampleStream_First() {
 	// Output:
 	// 5 <nil>
 	// true
+}
+
+func ExampleSuppress() {
+	ctx := context.Background()
+
+	// A malformed record is not a reason to stop the import; the parser says so itself.
+	parse := func(_ context.Context, s string) (int, error) {
+		n, err := strconv.Atoi(s)
+		return n, chunkflow.Suppress(err) // Suppress(nil) is nil
+	}
+
+	skipped := 0
+	nums, err := chunkflow.New(ctx).Seq(seq.Items("1", "x", "3", "", "5")).
+		Opts(chunkflow.WithOnError(func(err error) {
+			if errors.Is(err, chunkflow.ErrSuppressed) {
+				skipped++
+			}
+		})).
+		MapCtx(parse).
+		Collect()
+
+	fmt.Println(nums, err, skipped)
+	// Output: [1 3 5] <nil> 2
+}
+
+func ExampleStream_ReduceBy() {
+	ctx := context.Background()
+
+	words := seq.Items("go", "is", "fun", "and", "go", "is", "fast")
+
+	// Grouping is a fold that appends, starting from nil.
+	groups, err := chunkflow.New(ctx).Seq(words).
+		ReduceBy(func(w string) int { return len(w) }, nil, func(acc []string, w string) []string {
+			return append(acc, w)
+		})
+	fmt.Println(groups, err)
+
+	// Counting is a fold that adds one, starting from zero.
+	counts, err := chunkflow.New(ctx).Seq(words).
+		ReduceBy(func(w string) string { return w }, 0, func(n int, _ string) int { return n + 1 })
+	fmt.Println(counts, err)
+	// Output:
+	// map[2:[go is go is] 3:[fun and] 4:[fast]] <nil>
+	// map[and:1 fast:1 fun:1 go:2 is:2] <nil>
+}
+
+func ExampleStream_First_find() {
+	ctx := context.Background()
+
+	// "Find the first match" is Filter followed by First; the source stops right there.
+	pulled := 0
+	v, err := chunkflow.New(ctx).Seq(seq.Numbers(1)).
+		Tap(func(int) { pulled++ }).
+		Filter(func(i int) bool { return i%7 == 0 }).
+		First()
+
+	fmt.Println(v, err, pulled)
+	// Output: 7 <nil> 7
 }
 
 func ExampleErrPanic() {

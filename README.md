@@ -7,7 +7,7 @@ chunking. Built on Go 1.27 generic methods, so the whole pipeline reads left to 
 ```go
 err := chunkflow.New(ctx).Chan(userIDs).                 // any iter.Seq, iter.Seq2 or channel
     MapCtx(fetchUser, chunkflow.WithParallel(8)).        // I/O on 8 workers
-    CircuitBreaker(5).                                   // tolerate flaky lookups, trip on 5 in a row
+    Through(chunkflow.CircuitBreaker[User](5)).          // tolerate flaky lookups, trip on 5 in a row
     Filter(func(u User) bool { return u.Active }).
     Chunk[[]User](500).                                  // batch for the database
     ForEachCtx(insertBatch)                              // one INSERT per 500 users
@@ -26,8 +26,9 @@ err := chunkflow.New(ctx).Chan(userIDs).                 // any iter.Seq, iter.S
   would, only faster. One slow item holds back its successors; `WithUnordered()` gives that up for
   throughput when the consumer does not care about order.
 - **Errors are data.** An error from a source or a callback flows down the pipeline as an element.
-  Operators pass it along and keep working on values; terminals stop at the first one. Only
-  `CircuitBreaker` tolerates errors, and it marks rather than drops them, so nothing is lost.
+  Operators pass it along and keep working on values; terminals stop at the first one. An error is
+  tolerated only when something says so, `CircuitBreaker` below its threshold or a callback
+  returning `Suppress(err)`, and it is marked rather than dropped, so nothing is lost.
 - **Bugs are not data.** A panic in a callback, also on a worker goroutine, becomes an `ErrPanic`
   error that nothing may suppress. Whether a step runs on one worker or eight makes no difference
   to how a bug surfaces.
@@ -79,7 +80,9 @@ func main() {
     fmt.Println(nums, err != nil) // [1 2] true
 
     // Tolerating errors: CircuitBreaker(3) lets two failures in a row through and trips on the third.
-    // Tolerated errors are still visible through Seq() or the WithOnError hook.
+    // It is an error policy, so it enters through Through like every policy; the element type
+    // cannot be inferred from the threshold and is spelled out. Tolerated errors are still visible
+    // through Seq() or the WithOnError hook.
     tolerated := 0
     nums, err = chunkflow.New(ctx).Seq(seq.Items("1", "x", "3", "y", "5")).
         Opts(chunkflow.WithOnError(func(err error) {
@@ -88,7 +91,7 @@ func main() {
             }
         })).
         MapCtx(parse).
-        CircuitBreaker(3).
+        Through(chunkflow.CircuitBreaker[int](3)).
         Collect()
     fmt.Println(nums, err, tolerated) // [1 3 5] <nil> 2
 }
@@ -140,21 +143,22 @@ Lazy; nothing runs until a terminal pulls. Each `*Ctx` variant takes a callback 
 | `TakeWhile` / `SkipWhile` | `TakeWhile(func(T) bool)` · `SkipWhile(func(T) bool)`, `*Ctx` variants | Stop / start emitting at the first `false`; `SkipWhile` stops evaluating afterwards. |
 | `CompactFunc` | `CompactFunc(func(a, b T) bool)` | Drops **consecutive** duplicates in O(1) memory; input must be sorted or grouped for a global dedup. |
 | `Chunk` | `Chunk[R []T](size)` | Groups values into slices of `size`; the last one may be shorter. Errors pass through, the partial chunk is kept. |
-| `CircuitBreaker` | `CircuitBreaker(n)` | Tolerates up to `n-1` errors in a row by re-emitting them marked `ErrSuppressed`; trips on the `n`-th. Never suppresses context errors or `ErrPanic`. |
 | `Through` | `Through[R](func(Stream[T]) Stream[R])` | Plugs a top-level function into the chain, keeping left-to-right order. |
 | `Opts` | `Opts(...Option)` | Pipeline options for everything downstream. |
 
 ### Top-level functions
 
-Operations that change the element type or need a constraint a method cannot express. Use them
-with `.Through()`.
+Operations that change the element type or need a constraint a method cannot express, and error
+policies, which are not operations on values. Use them with `.Through()`.
 
 | | |
 | --- | --- |
+| `CircuitBreaker[T](n) func(Stream[T]) Stream[T]` | Tolerates up to `n-1` errors in a row by re-emitting them marked `ErrSuppressed`; trips on the `n`-th. Never suppresses context errors or `ErrPanic`. `T` must be spelled out. |
 | `Flatten[E](Stream[[]E]) Stream[E]` | Unwraps a stream of slices. |
 | `Compact[T comparable](Stream[T])` | `CompactFunc` with `==`. |
 | `Concat(...Stream[T])` | One stream after another, deterministic; errors keep their position. |
 | `Merge(...Stream[T])` | All streams concurrently, interleaved as they arrive; cancelled by any source's context, with the original cause kept. |
+| `Suppress(err) error` | Marks an error as tolerated, for use inside a `*Ctx` callback (see below). |
 
 ### Terminal operations
 
@@ -166,6 +170,7 @@ together with whatever was produced so far.
 | `Collect()` | `([]T, error)` | Everything into a slice. Do not use on infinite streams. |
 | `ForEach` / `ForEachCtx` | `error` | Side effect per element. |
 | `Reduce[R](init R, func(acc R, item T) R)` / `ReduceCtx` | `(R, error)` | Fold into an accumulator of any type, `(acc, item)` order, `init` first. Always sequential. |
+| `ReduceBy[K, R](key func(T) K, init R, func(acc R, item T) R)` / `ReduceByCtx` | `(map[K]R, error)` | One fold per key: group (`nil`, append), count (`0`, `+1`), sum, max. `init` is copied per key, so start from a scalar or `nil`. Materialises like `Collect`. |
 | `Count()` | `(int, error)` | |
 | `Drain()` | `error` | Exhausts the stream, discards values; the terminal for side-effect pipelines. |
 | `All` / `AllCtx` | `(bool, error)` | Short-circuits on the first mismatch. **Empty stream: `true`** (vacuous truth). |
@@ -195,7 +200,7 @@ emits a single error and ends.
 ### Errors, in one place
 
 ```go
-for v, err := range stream.CircuitBreaker(5).Seq() {
+for v, err := range stream.Through(chunkflow.CircuitBreaker[User](5)).Seq() {
     switch {
     case err == nil:
         use(v)
@@ -213,6 +218,10 @@ for v, err := range stream.CircuitBreaker(5).Seq() {
   never puts an error into a slice, `Compact` compares only values.
 - A pipeline without `CircuitBreaker` is fail-fast: the source is not consumed past the failing
   element.
+- A callback that knows an error is tolerable returns `Suppress(err)`: the element is replaced by the
+  marked error, terminals skip it, `WithOnError` and `Seq()` still see it, `CircuitBreaker` does not
+  count it. `Suppress(nil)` is `nil`; context errors and `ErrPanic` cannot be suppressed and come
+  back unchanged.
 - Cancelling the context always surfaces as an error, also when a worker pool exits without emitting.
 - `First` and `Last` on a stream without values return `ErrEmpty`. It is a plain sentinel for "nothing
   to return", not a failure: it never reaches `WithOnError`, and `errors.Is(err, ErrEmpty)` tells it

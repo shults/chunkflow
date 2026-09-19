@@ -1,6 +1,7 @@
 package chunkflow
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime/debug"
@@ -11,14 +12,31 @@ import (
 // return. It is never passed to the WithOnError hook.
 var ErrEmpty = errors.New("empty stream")
 
-// ErrSuppressed marks an error that a CircuitBreaker decided to tolerate.
-// Terminal operations skip elements carrying such an error instead of failing.
-// Use errors.Is(err, ErrSuppressed) to detect one, for example when iterating Stream.Seq();
-// the original error stays in the chain, so errors.Is(err, original) keeps working too.
-var ErrSuppressed = errors.New("suppressed by circuit breaker")
+// ErrSuppressed marks an error that something decided to tolerate: a CircuitBreaker
+// below its threshold, or a callback that returned Suppress(err). Terminal operations
+// skip elements carrying such an error instead of failing. Use errors.Is(err, ErrSuppressed)
+// to detect one, for example when iterating Stream.Seq(); the original error stays in the
+// chain, so errors.Is(err, original) keeps working too.
+var ErrSuppressed = errors.New("suppressed")
 
-// suppressedError wraps an error tolerated by CircuitBreaker. It matches both
-// ErrSuppressed and the original error when inspected with errors.Is.
+// Suppress marks err as tolerated. Return it from a MapCtx, FilterCtx or TapCtx callback
+// when the failure of this one element is not a reason to stop the pipeline: the element
+// is replaced by the marked error, terminal operations skip it, WithOnError and Seq still
+// see it with err in the chain, and a downstream CircuitBreaker does not count it.
+//
+// Suppress(nil) is nil, so `return v, chunkflow.Suppress(err)` needs no branch. An error
+// that is already suppressed is returned as is. Context errors and ErrPanic cannot be
+// suppressed, exactly as with CircuitBreaker; they come back unchanged and stay fatal.
+func Suppress(err error) error {
+	if err == nil || isSuppressed(err) || neverSuppressed(err) {
+		return err
+	}
+	return &suppressedError{err: err}
+}
+
+// suppressedError wraps a tolerated error. It matches both ErrSuppressed and the original
+// error when inspected with errors.Is. A CircuitBreaker records how far the error got it
+// towards tripping; an error from Suppress has no threshold.
 type suppressedError struct {
 	err                 error
 	consecutiveFailures int
@@ -26,7 +44,10 @@ type suppressedError struct {
 }
 
 func (e *suppressedError) Error() string {
-	return fmt.Sprintf("%v (failure %d/%d): %v", ErrSuppressed, e.consecutiveFailures, e.threshold, e.err)
+	if e.threshold == 0 {
+		return fmt.Sprintf("%v: %v", ErrSuppressed, e.err)
+	}
+	return fmt.Sprintf("%v by circuit breaker (failure %d/%d): %v", ErrSuppressed, e.consecutiveFailures, e.threshold, e.err)
 }
 
 // Unwrap exposes both the original error and the ErrSuppressed sentinel.
@@ -34,9 +55,15 @@ func (e *suppressedError) Unwrap() []error {
 	return []error{e.err, ErrSuppressed}
 }
 
-// isSuppressed reports whether err was tolerated by a CircuitBreaker.
+// isSuppressed reports whether err is marked as tolerated.
 func isSuppressed(err error) bool {
 	return errors.Is(err, ErrSuppressed)
+}
+
+// neverSuppressed reports whether err belongs to the class no policy may tolerate:
+// a recovered panic (a bug) or a context error (the pipeline was told to stop).
+func neverSuppressed(err error) bool {
+	return isPanic(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // ErrPanic marks an error produced from a panic inside a user callback of an Stream

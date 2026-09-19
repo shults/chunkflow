@@ -50,7 +50,7 @@ func TestStream_Compact(t *testing.T) {
 		}
 		var values []int
 		var suppressed int
-		for v, err := range chunkflow.New(ctx).Seq2(src).Through(chunkflow.Compact).CircuitBreaker(100).Seq() {
+		for v, err := range chunkflow.New(ctx).Seq2(src).Through(chunkflow.Compact).Through(chunkflow.CircuitBreaker[int](100)).Seq() {
 			if err != nil {
 				require.ErrorIs(t, err, chunkflow.ErrSuppressed)
 				suppressed++

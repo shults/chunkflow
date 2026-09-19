@@ -21,7 +21,7 @@ func failing(_ context.Context, i int) (int, error) {
 	return i, nil
 }
 
-func TestStream_CircuitBreaker(t *testing.T) {
+func TestCircuitBreaker(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("tolerates errors below the threshold and keeps processing the source", func(t *testing.T) {
@@ -32,7 +32,7 @@ func TestStream_CircuitBreaker(t *testing.T) {
 				mapped = append(mapped, i)
 				return failing(ctx, i)
 			}).
-			CircuitBreaker(5). // 3 consecutive failures < 5
+			Through(chunkflow.CircuitBreaker[int](5)). // 3 consecutive failures < 5
 			Collect()
 
 		require.NoError(t, err)
@@ -44,7 +44,7 @@ func TestStream_CircuitBreaker(t *testing.T) {
 		res, err := chunkflow.
 			New(ctx).Seq(seq.Range(0, 10)).
 			MapCtx(failing).
-			CircuitBreaker(3).
+			Through(chunkflow.CircuitBreaker[int](3)).
 			Collect()
 
 		require.ErrorIs(t, err, errBoom)
@@ -63,7 +63,7 @@ func TestStream_CircuitBreaker(t *testing.T) {
 				}
 				return i, nil
 			}).
-			CircuitBreaker(2).
+			Through(chunkflow.CircuitBreaker[int](2)).
 			Collect()
 
 		require.NoError(t, err)
@@ -71,15 +71,15 @@ func TestStream_CircuitBreaker(t *testing.T) {
 	})
 
 	t.Run("threshold below 1 is an error", func(t *testing.T) {
-		_, err := chunkflow.New(ctx).Seq(seq.Items(1)).CircuitBreaker(0).Collect()
-		require.ErrorContains(t, err, "threshold must be >= 1")
+		_, err := chunkflow.New(ctx).Seq(seq.Items(1)).Through(chunkflow.CircuitBreaker[int](0)).Collect()
+		require.ErrorContains(t, err, "threshold must be at least 1")
 	})
 
 	t.Run("suppressed errors are observable through Seq", func(t *testing.T) {
 		var values []int
 		var suppressed []error
 
-		for v, err := range chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(failing).CircuitBreaker(5).Seq() {
+		for v, err := range chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(failing).Through(chunkflow.CircuitBreaker[int](5)).Seq() {
 			if err == nil {
 				values = append(values, v)
 				continue
@@ -97,7 +97,7 @@ func TestStream_CircuitBreaker(t *testing.T) {
 
 	t.Run("Seq stops after a fatal error but not after a suppressed one", func(t *testing.T) {
 		var errs []error
-		for _, err := range chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(failing).CircuitBreaker(3).Seq() {
+		for _, err := range chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(failing).Through(chunkflow.CircuitBreaker[int](3)).Seq() {
 			if err != nil {
 				errs = append(errs, err)
 			}
@@ -115,8 +115,8 @@ func TestStream_CircuitBreaker(t *testing.T) {
 		res, err := chunkflow.
 			New(ctx).Seq(seq.Range(0, 10)).
 			MapCtx(failing).
-			CircuitBreaker(100).
-			CircuitBreaker(1).
+			Through(chunkflow.CircuitBreaker[int](100)).
+			Through(chunkflow.CircuitBreaker[int](1)).
 			Collect()
 
 		require.NoError(t, err)
@@ -129,7 +129,7 @@ func TestStream_CircuitBreaker(t *testing.T) {
 
 		_, err := chunkflow.
 			New(cctx).Seq(seq.Numbers(0)).
-			CircuitBreaker(1000).
+			Through(chunkflow.CircuitBreaker[int](1000)).
 			Take(3).
 			Collect()
 
@@ -146,7 +146,7 @@ func TestStream_CircuitBreaker(t *testing.T) {
 				}
 				return i, nil
 			}, chunkflow.WithParallel(4)).
-			CircuitBreaker(50).
+			Through(chunkflow.CircuitBreaker[int](50)).
 			Collect()
 
 		require.NoError(t, err)
@@ -165,7 +165,7 @@ func TestStream_CircuitBreaker(t *testing.T) {
 				}
 			}
 		}
-		res, err := chunkflow.New(ctx).Seq2(src).CircuitBreaker(2).Collect()
+		res, err := chunkflow.New(ctx).Seq2(src).Through(chunkflow.CircuitBreaker[int](2)).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 2, 4, 5}, res)
 	})
@@ -174,7 +174,7 @@ func TestStream_CircuitBreaker(t *testing.T) {
 // tolerant is 0..9 with 2,3,4 failing and a breaker that never trips, so the
 // suppressed errors reach whatever comes next.
 func tolerant(ctx context.Context) chunkflow.Stream[int] {
-	return chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(failing).CircuitBreaker(100)
+	return chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(failing).Through(chunkflow.CircuitBreaker[int](100))
 }
 
 func TestStream_TerminalsSkipSuppressedErrors(t *testing.T) {
@@ -214,7 +214,7 @@ func TestStream_TerminalsSkipSuppressedErrors(t *testing.T) {
 
 	t.Run("First and Last", func(t *testing.T) {
 		// make the very first items fail so First has to skip suppressed errors
-		s := chunkflow.New(ctx).Seq(seq.Range(2, 10)).MapCtx(failing).CircuitBreaker(100)
+		s := chunkflow.New(ctx).Seq(seq.Range(2, 10)).MapCtx(failing).Through(chunkflow.CircuitBreaker[int](100))
 
 		first, err := s.First()
 		require.NoError(t, err)
@@ -244,7 +244,7 @@ func TestStream_ErrorsFlowThroughIntermediateStages(t *testing.T) {
 		return chunkflow.New(ctx).Seq(seq.Range(0, 10)).MapCtx(failing)
 	}
 	swallow := func(s chunkflow.Stream[int]) chunkflow.Stream[int] {
-		return s.CircuitBreaker(100)
+		return s.Through(chunkflow.CircuitBreaker[int](100))
 	}
 
 	t.Run("Take does not count errors", func(t *testing.T) {
@@ -270,7 +270,7 @@ func TestStream_ErrorsFlowThroughIntermediateStages(t *testing.T) {
 	})
 
 	t.Run("Chunk keeps the partial chunk across an error", func(t *testing.T) {
-		res, err := source().Chunk[[]int](3).CircuitBreaker(100).Collect()
+		res, err := source().Chunk[[]int](3).Through(chunkflow.CircuitBreaker[[]int](100)).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, [][]int{{0, 1, 5}, {6, 7, 8}, {9}}, res)
 	})

@@ -17,9 +17,10 @@ import (
 // Error semantics: an error produced by the source or by a callback travels down the
 // pipeline as an element. Intermediate operations pass it through untouched and keep
 // processing the remaining input; they operate on values only and never interpret
-// errors. CircuitBreaker may mark an error as tolerated (see ErrSuppressed). Terminal
-// operations skip elements whose error matches ErrSuppressed and stop at the first
-// other error, so a pipeline without a CircuitBreaker behaves as "fail fast".
+// errors. CircuitBreaker, or a callback returning Suppress(err), may mark an error as
+// tolerated (see ErrSuppressed). Terminal operations skip elements whose error matches
+// ErrSuppressed and stop at the first other error, so a pipeline that tolerates nothing
+// behaves as "fail fast".
 //
 // A panic inside any user callback is recovered where it happens, also on worker
 // goroutines, and becomes an error matching ErrPanic that no operator may suppress.
@@ -517,59 +518,6 @@ func (s Stream[T]) Through[R any](transform func(Stream[T]) Stream[R]) Stream[R]
 	return transform(s)
 }
 
-// CircuitBreaker tolerates up to maxConsecutiveFailures-1 errors in a row and trips on
-// the next one, interrupting the stream with a wrapped error. A successful element resets
-// the counter.
-//
-// Tolerated errors are not dropped: they are re-emitted wrapped in an error matching
-// ErrSuppressed so that downstream terminal operations skip them while consumers of
-// Seq() can still observe them. Errors already marked as suppressed by an upstream
-// breaker pass through without affecting the counter. Context errors (context.Canceled,
-// context.DeadlineExceeded) and recovered panics (ErrPanic) are never suppressed: they
-// pass through and end the stream.
-//
-// After a parallel stage "consecutive" follows source order, which is what the stage emits
-// unless it runs WithUnordered; then it follows arrival order.
-func (s Stream[T]) CircuitBreaker(maxConsecutiveFailures int) Stream[T] {
-	if maxConsecutiveFailures < 1 {
-		return s.errStream[T](fmt.Errorf("threshold must be >= 1"))
-	}
-
-	return s.derive(func(yield func(result[T]) bool) {
-		consecutiveFailures := 0
-		for item := range s.seq {
-			switch {
-			case item.err == nil:
-				consecutiveFailures = 0
-			case isSuppressed(item.err):
-				// already handled by an upstream breaker; not ours to count
-			case isPanic(item.err), errors.Is(item.err, context.Canceled), errors.Is(item.err, context.DeadlineExceeded):
-				// bugs and cancellations are never tolerated: pass through and end
-				yield(item)
-				return
-			default:
-				consecutiveFailures++
-				if consecutiveFailures >= maxConsecutiveFailures {
-					yield(result[T]{
-						err: fmt.Errorf("circuit breaker tripped after %d consecutive errors: %w",
-							consecutiveFailures, item.err),
-					})
-					return
-				}
-				item = result[T]{err: &suppressedError{
-					err:                 item.err,
-					consecutiveFailures: consecutiveFailures,
-					threshold:           maxConsecutiveFailures,
-				}}
-			}
-
-			if !yield(item) {
-				return
-			}
-		}
-	})
-}
-
 // Seq returns the stream as a native (value, error) iterator. Elements tolerated by a
 // CircuitBreaker are yielded with an error matching ErrSuppressed; iteration stops after
 // the first error that is not suppressed.
@@ -648,6 +596,41 @@ func (s Stream[T]) ReduceCtx[R any](init R, fn func(ctx context.Context, acc R, 
 		return true, err
 	})
 	return acc, err
+}
+
+// ReduceBy folds the stream into one accumulator per key: key picks the group of each
+// value, and fn(acc, item) runs the fold of that group exactly as Reduce would, starting
+// from init. It is the map-reduce terminal: grouping (init nil, fn appends), counting
+// (init 0, fn adds one), sums, maxima and the like are all one call. Groups are kept in
+// source order within each key. Values are materialised like Collect, so the result is
+// bounded by the number of keys and the size of their accumulators, not by the stream.
+//
+// init is copied into every group by value. Start from a scalar, nil or a zero value
+// and let fn allocate; a non-nil map, slice or pointer given as init would be shared
+// between the groups. On error the map built so far is returned together with the error.
+func (s Stream[T]) ReduceBy[K comparable, R any](key func(T) K, init R, fn func(acc R, item T) R) (map[K]R, error) {
+	return s.ReduceByCtx(key, init, func(_ context.Context, acc R, item T) (R, error) {
+		return fn(acc, item), nil
+	})
+}
+
+// ReduceByCtx is ReduceBy with a context-aware fn that may fail; a returned error stops
+// the fold and is returned with the map built so far. key stays a plain function: a key
+// is a property of the value, work that needs the context belongs in a preceding MapCtx.
+// Like ReduceCtx it is sequential and takes no StepOption.
+func (s Stream[T]) ReduceByCtx[K comparable, R any](key func(T) K, init R, fn func(ctx context.Context, acc R, item T) (R, error)) (map[K]R, error) {
+	groups := make(map[K]R)
+	err := s.each(func(item T) (bool, error) {
+		k := key(item)
+		acc, ok := groups[k]
+		if !ok {
+			acc = init
+		}
+		acc, err := fn(s.ctx, acc, item)
+		groups[k] = acc
+		return true, err
+	})
+	return groups, err
 }
 
 // All verifies whether all elements satisfy the predicate. Short-circuits on the first mismatch.
@@ -751,6 +734,71 @@ func (s Stream[T]) Last() (T, error) {
 // Stream.CompactFunc for the semantics and the sorted-or-grouped input precondition.
 func Compact[T comparable](stream Stream[T]) Stream[T] {
 	return stream.CompactFunc(func(a, b T) bool { return a == b })
+}
+
+// CircuitBreaker returns a transform for Through that tolerates up to
+// maxConsecutiveFailures-1 errors in a row and trips on the next one, interrupting the
+// stream with a wrapped error. A successful element resets the counter. The element type
+// cannot be inferred from the threshold, so it is spelled out:
+//
+//	users.Through(chunkflow.CircuitBreaker[User](5))
+//
+// It is a function rather than a method because it is an error policy, not an operation on
+// values; every policy enters the chain the same way.
+//
+// Tolerated errors are not dropped: they are re-emitted wrapped in an error matching
+// ErrSuppressed so that downstream terminal operations skip them while consumers of
+// Seq() can still observe them. Errors already marked as suppressed, by an upstream
+// breaker or by a callback via Suppress, pass through without affecting the counter. Context errors (context.Canceled,
+// context.DeadlineExceeded) and recovered panics (ErrPanic) are never suppressed: they
+// pass through and end the stream.
+//
+// After a parallel stage "consecutive" follows source order, which is what the stage emits
+// unless it runs WithUnordered; then it follows arrival order.
+func CircuitBreaker[T any](maxConsecutiveFailures int) func(Stream[T]) Stream[T] {
+	return func(s Stream[T]) Stream[T] {
+		if maxConsecutiveFailures < 1 {
+			return s.errStream[T](fmt.Errorf("chunkflow: CircuitBreaker(%d): threshold must be at least 1", maxConsecutiveFailures))
+		}
+		return s.derive(breakerSeq(s.seq, maxConsecutiveFailures))
+	}
+}
+
+// breakerSeq is the element-level logic of CircuitBreaker over a raw sequence.
+func breakerSeq[T any](seq iter.Seq[result[T]], maxConsecutiveFailures int) iter.Seq[result[T]] {
+	return func(yield func(result[T]) bool) {
+		consecutiveFailures := 0
+		for item := range seq {
+			switch {
+			case item.err == nil:
+				consecutiveFailures = 0
+			case isSuppressed(item.err):
+				// already handled by an upstream breaker; not ours to count
+			case neverSuppressed(item.err):
+				// bugs and cancellations are never tolerated: pass through and end
+				yield(item)
+				return
+			default:
+				consecutiveFailures++
+				if consecutiveFailures >= maxConsecutiveFailures {
+					yield(result[T]{
+						err: fmt.Errorf("circuit breaker tripped after %d consecutive errors: %w",
+							consecutiveFailures, item.err),
+					})
+					return
+				}
+				item = result[T]{err: &suppressedError{
+					err:                 item.err,
+					consecutiveFailures: consecutiveFailures,
+					threshold:           maxConsecutiveFailures,
+				}}
+			}
+
+			if !yield(item) {
+				return
+			}
+		}
+	}
 }
 
 // Concat emits every element of the first stream, then of the second, and so on.

@@ -36,7 +36,7 @@ func TestStream_Concat(t *testing.T) {
 		res, err := chunkflow.Concat(
 			chunkflow.New(ctx).Seq(seq.Range(0, 5)).MapCtx(failing), // 2,3,4 fail
 			chunkflow.New(ctx).Seq(seq.Items(9)),
-		).CircuitBreaker(100).Collect()
+		).Through(chunkflow.CircuitBreaker[int](100)).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 1, 9}, res)
 	})
@@ -202,7 +202,7 @@ func TestStream_Merge(t *testing.T) {
 		res, err := chunkflow.Merge(
 			chunkflow.New(ctx).Seq(seq.Range(0, 5)).MapCtx(failing), // 2,3,4 fail
 			chunkflow.New(ctx).Seq(seq.Range(10, 13)),
-		).CircuitBreaker(100).Collect()
+		).Through(chunkflow.CircuitBreaker[int](100)).Collect()
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []int{0, 1, 10, 11, 12}, res)
 	})

@@ -4,7 +4,7 @@
 // errors as elements and can run steps on worker pools. Every intermediate operation
 // is a closure over the upstream iterator, nothing is buffered except by Chunk, and
 // nothing runs until a terminal operation pulls. Callbacks that need the context or may
-// fail have a *Ctx variant (MapCtx, FilterCtx, ReduceCtx, AllCtx, AnyCtx, ForEachCtx);
+// fail have a *Ctx variant (MapCtx, FilterCtx, ReduceCtx, ReduceByCtx, AllCtx, AnyCtx, ForEachCtx);
 // the plain variant is that *Ctx variant pinned to one worker.
 //
 // # Constructing streams
@@ -42,11 +42,13 @@
 // stop at the first error they see, which makes a plain pipeline fail fast and
 // stop consuming the source right after the failing element.
 //
-// CircuitBreaker(n) is the one operator that tolerates errors. Below its threshold
-// it re-emits each error wrapped so that errors.Is(err, ErrSuppressed) is true while
-// the original error stays in the chain; terminal operations skip such elements,
-// and consumers of Seq can still observe them. On the n-th consecutive error the
-// breaker trips with a fatal error. Context errors are never suppressed.
+// Errors are tolerated only when something says so. CircuitBreaker[T](n), an error policy
+// plugged in with Through, re-emits each error below its threshold wrapped so that errors.Is(err, ErrSuppressed) is true while
+// the original error stays in the chain; terminal operations skip such elements, and
+// consumers of Seq can still observe them. On the n-th consecutive error the breaker
+// trips with a fatal error. A callback that knows better returns Suppress(err) itself,
+// replacing that one element by the marked error; the breaker does not count it.
+// Context errors are never suppressed.
 //
 // A panic inside a callback is recovered where it happens, also on worker goroutines,
 // and becomes an error matching ErrPanic that nothing may suppress. A bug therefore

@@ -50,9 +50,17 @@ new convention is introduced or an old one is changed; a convention without a re
   head-of-line blocking, is documented on `WithParallel` and is paid only by pipelines that would
   otherwise have had to sort.
 - **Errors flow, terminals decide.** An error is an element. Terminal operations stop at the first
-  error that is not marked `ErrSuppressed`. Only `CircuitBreaker` marks errors as tolerated; it never
-  drops or logs them, so `Seq()` shows everything. *Why:* silent data loss is the worst failure mode
-  of a pipeline; observability stays with the consumer.
+  error that is not marked `ErrSuppressed`. Two things may mark an error: `CircuitBreaker` below its
+  threshold and a callback returning `Suppress(err)`; neither drops or logs it, so `Seq()` shows
+  everything. *Why:* silent data loss is the worst failure mode of a pipeline; observability stays
+  with the consumer. Context errors and `ErrPanic` are refused by both, at construction, so an error
+  that matches `ErrSuppressed` is always one the terminals will skip.
+- **The error model lives in the root, policies do not.** The root owns `ErrSuppressed`, `ErrPanic`,
+  `ErrEmpty`, `Suppress` and `CircuitBreaker`, the one policy that gives `ErrSuppressed` its
+  meaning. Anything that only *uses* the model (retry, rate limiting, an in-stream error logger)
+  enters through a sub-package and `Through`, once it has a use case. *Why:* the breaker is not a
+  policy bolted on, it is how tolerance is defined; everything else is a plug-in and stays a minor
+  version away instead of a breaking change.
 - **Panics in callbacks become `ErrPanic` errors, never re-panics.** Recovered once per stage
   (also inside workers) with the callback boundary marked by a bool, pushed downstream in position,
   never suppressed by `CircuitBreaker`, returned by every terminal. *Why:* `recover` only works on
@@ -63,13 +71,19 @@ new convention is introduced or an old one is changed; a convention without a re
 - **Type-changing operations are top-level functions used via `Through`.** A method cannot add a
   constraint on the receiver's type parameter (`Flatten` needs `Stream[[]E]`, `Compact` needs
   `comparable`), and Go has no overloading. `Through` keeps the left-to-right reading order.
+- **Error policies are top-level functions used via `Through`, too.** `CircuitBreaker[T](n)` is not
+  a method although a method would compile: it does not operate on values, it decides what an error
+  means, and every policy, in this package or outside it, should enter the chain the same way. The
+  price is an explicit type argument, `Through(chunkflow.CircuitBreaker[User](5))`, because Go does
+  not infer a call's type parameters from where its result is used (checked; a generic method value
+  on an exported config type would infer, but exports a type for nothing).
 - **Generic methods introduce new type parameters** (`Map[R]`, `Chunk[R]`, `Seq[T]` on the builder)
   wherever the receiver's own parameters suffice as constraints. This is the language feature the
   library is built on; use it before reaching for a top-level function.
 - **Minimal exported surface.** No struct is exported to carry internal state (the breaker's
   suppressed-error struct is private; only the `ErrSuppressed` sentinel is public). An exported type
   is a one-way door: adding one later is free, removing one is a breaking change.
-- **Rule of three.** Do not generalise from one case. `CircuitBreaker` stays a concrete operator until
+- **Rule of three.** Do not generalise from one case. `CircuitBreaker` stays a concrete function until
   a second error policy shows up; `Zip3` is not added until someone needs it; there is no `Distinct`
   because a global "seen" set belongs to the user's store, not inside the pipeline
   (see `ExampleStream_Chunk_deduplication`).
@@ -101,6 +115,10 @@ new convention is introduced or an old one is changed; a convention without a re
 - `Take(n)` / `Skip(n)` count values, not errors. `TakeWhile` stops pulling at the first `false`
   and therefore never sees errors that come after it.
 - `Compact` removes only *adjacent* duplicates (input must be sorted or grouped), in O(1) memory.
+- `ReduceBy` is the only keyed operation and it is a terminal, like `Collect`: terminals may
+  materialise, intermediate operators may not (that is why there is no `Distinct` or streaming
+  `GroupBy`). `init` is copied into every group by value; a reference type as `init` is shared
+  between groups, which is the caller's bug, not a case the library papers over.
 - `First` / `Last` return `(T, error)` and signal a stream without values with the `ErrEmpty`
   sentinel, not with a `bool`. *Why:* the function returns an error anyway, so a third return
   value forces two checks where one suffices, and std signals expected absence from an

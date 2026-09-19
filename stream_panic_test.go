@@ -96,7 +96,7 @@ func TestStream_PanicsBecomeErrors(t *testing.T) {
 				}
 				return explode(ctx, i)
 			}).
-			CircuitBreaker(100).
+			Through(chunkflow.CircuitBreaker[int](100)).
 			Collect()
 		require.ErrorIs(t, err, chunkflow.ErrPanic)
 		assert.Equal(t, []int{0, 2}, res, "1 was suppressed, 3 panicked and ended the stream")

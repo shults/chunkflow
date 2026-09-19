@@ -49,6 +49,22 @@ Goal: fix the shapes that are awkward now, while nobody depends on them, then fr
   - `First` / `Last` now return `(T, error)` with the `ErrEmpty` sentinel (see CONVENTIONS.md)
 - [x] document in godoc of `MapCtx`/`FilterCtx`/`TapCtx` that after a fatal error the pool may still
       run the callback on items already buffered (up to `WithParallel(n)` of them) before it shuts down
+- [x] export `Suppress(err) error` so a callback can tolerate an error where it has the context to
+      decide; the struct stays private, context errors and `ErrPanic` are refused, `CircuitBreaker`
+      stays in the root as the operator that defines tolerance (see CONVENTIONS.md)
+- [x] `ReduceBy` / `ReduceByCtx`: one fold per key, the map-reduce terminal. Chosen over three
+      sugar methods after checking the neighbours (rill has `MapReduce` and nothing else keyed; the
+      libraries that have `GroupBy` / `CountBy` / `Find` are in-memory collection toolkits, and their
+      helpers work on `Collect()`'s slice anyway):
+  - ~~`GroupBy`~~ — `ReduceBy(key, nil, append)`; ~~`CountBy`~~ — `ReduceBy(key, 0, +1)`, and the
+    name means "count matches of a predicate" in `lo` but "counts per key" in lodash, Rust and
+    Kotlin, so whichever we picked would surprise half the users
+  - ~~`Find(p)`~~ — `Filter(p).First()`, same laziness, same short-circuit; Java has no `find`
+    either. Shown in `ExampleStream_First_find`
+- [x] `CircuitBreaker` is a top-level function for `Through`, not a method: it is an error policy,
+      not an operation on values (see CONVENTIONS.md). `Through(chunkflow.CircuitBreaker(5))` does
+      not compile, Go cannot infer `T` from the use of a call's result, hence
+      `Through(chunkflow.CircuitBreaker[User](5))`
 - [ ] tag `v0.1.0`
 
 ## Phase 4 — Measure the claims
@@ -90,14 +106,13 @@ Ideas without a decision. They enter a phase only with a concrete use case.
   ~~`KVStream`~~ was dropped: a dedicated type for a handful of helpers is not worth it
 - rate limiting / retry with backoff. `Retry` wraps `MapCtx` (it must re-run the upstream op), so
   it is not an error policy
-- **error policies as plug-ins** (gut says "not yet"). `CircuitBreaker` is one instance of a stage
-  that looks only at errored elements and decides *fatal* / *tolerated* / *replaced*. The extension
-  seam already exists (errors are elements, `Seq()` / `New(ctx).Seq2` cross the boundary both ways,
-  `Through` plugs a transform in); the only missing piece would be an exported `Suppress(err) error`,
-  never the struct. Rule of three: the *second* policy does not enter as another method — at that
-  point either generalise to `OnError(policy)` + `Suppress`, or accept two concrete operators. If it
-  happens, `CircuitBreaker` moves to a neighbouring sub-package so the core stays `Stream`, the
-  builder and the terminals
+- **error policies as plug-ins**, e.g. `Through(policies.Retry(...))`. Decided: `CircuitBreaker`
+  stays in the root (it defines tolerance, see CONVENTIONS.md) but already has the plug-in shape,
+  a function for `Through`, and `Suppress` is exported, so a policy can mark errors. What is still missing is a raw view for a policy to iterate on: `Seq()`
+  stops after the first fatal error, so a plug-in that wants to *continue* past one (retry, a
+  breaker variant) needs something like `Stream.Transform(func(iter.Seq2[T, error]) iter.Seq2[T, error]) Stream[T]`
+  that keeps `ctx` and options. Both the method and the `policies` package are additive, hence a
+  minor version; they enter with the first concrete policy
 - a public setter for the read-ahead multiplier of ordered parallel steps (`options.readAhead`,
   default 2). Shape if picked up: a `StepOption` taking a multiplier, not an absolute size, so the
   window can never be smaller than the worker count. Use case to wait for: plenty of memory and
