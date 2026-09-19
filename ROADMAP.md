@@ -108,8 +108,38 @@ Ideas without a decision. They enter a phase only with a concrete use case.
   `seq.Pairs(iter.Seq2[K, V]) iter.Seq[tuple.Pair[K, V]]` for any `Seq2` source and
   `seq.KVPairs(map[K]V)` so callers need not import `maps` (iteration order is random — say so).
   ~~`KVStream`~~ was dropped: a dedicated type for a handful of helpers is not worth it
-- rate limiting / retry with backoff. `Retry` wraps `MapCtx` (it must re-run the upstream op), so
-  it is not an error policy
+- **step decorators** (`Retry`, `Timeout`, `SuppressErrors(target)`, rate limiting): the second
+  extension family next to policies, see CONVENTIONS.md. A decorator wraps the callback itself,
+  `func(ctx, T) (R, error)` in and out, so it can re-run or bound a call; a policy on the stream
+  cannot. It needs nothing from the root, the callback signature is plain Go, so it is its own
+  package (`step`, not `middlewares`: singular, short, and "middleware" promises request/response
+  access it does not have), inside or outside the module, and always a minor. Parked until the
+  first real user, with these findings so the design is not redone:
+  - shape, checked with the compiler: `Decorate(fn, Retry(3), Timeout(d))` does not compile, Go
+    cannot infer `Retry`'s `T, R` from where its result goes, and `Retry[User, Row](3)` on every
+    element is worse than the problem. Three shapes do compile without type arguments:
+    nested `step.Retry(3, step.Timeout(d, fetch))` (no exported type, reads outside-in, awkward
+    past three layers); a list of generic method values `Decorate(fetch, step.Retry(3).Apply, ...)`
+    (`.Apply` noise, exports the config type); a builder
+    `step.Wrap(fetch).Timeout(d).Retry(3).Fn()` (reads like the stream, exports one generic type,
+    last call is outermost). Preferred: nested first, builder added beside it only if three
+    layers in one place turn out to be common; both work on the bare callback, so nothing is lost
+  - arity: the callback shapes in the root are `func(ctx, T) (R, error)` (`MapCtx`, and with
+    `R = bool` also `FilterCtx`, `TakeWhileCtx`, `SkipWhileCtx`, `AllCtx`, `AnyCtx`),
+    `func(ctx, T) error` (`TapCtx`, `ForEachCtx`) and `func(ctx, acc R, T) (R, error)` (`ReduceCtx`,
+    `ReduceByCtx`). One decorator set cannot cover all three without adapters or three copies.
+    Decision for a first version: target the first shape only, where retry and timeouts actually
+    happen (I/O in `MapCtx`, predicates that call out); a side effect that needs retrying is a
+    `MapCtx` returning its input, which is what `TapCtx` is internally anyway; folds are in-memory
+    and get nothing. Adapters (`step.ForTap`, `step.ForFold`) only with a use case
+  - semantics to fix before writing `Retry`: never retry context errors or errors already marked
+    by `Suppress` (someone has decided), retries are per element and invisible to a downstream
+    breaker, a panic in the callback is caught by the stage guard above the decorator and must not
+    be retried. `SuppressErrors(context.Canceled)` would be a no-op, `Suppress` refuses context
+    errors; the realistic target is a domain error such as `ErrNotFound`
+  - composition with policies is the point: `MapCtx(step.Retry(3, fetch), WithParallel(8)).
+    Through(policy.CircuitBreaker[User](5))` is three attempts per element, then a breaker over
+    five elements in a row; neither mechanism can express the other
 - **more policies** in `policy`, e.g. an in-stream error observer or a breaker with a time window.
   The seam (`Transform`, `Suppress`) and the package exist; each new policy is additive, hence a
   minor version, and enters with a concrete use case. `Retry` is different: it must re-run the
