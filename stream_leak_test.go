@@ -90,52 +90,82 @@ func TestStream_NoGoroutineLeaks(t *testing.T) {
 	})
 
 	t.Run("one worker fails while others are still running", func(t *testing.T) {
-		defer goleak.VerifyNone(t)
+		// Ordered: the failure must be the head of the line, otherwise the emitter
+		// rightly waits for the (blocked) predecessors. Unordered: any position will do.
+		for name, tc := range map[string]struct {
+			failAt int
+			opts   []chunkflow.StepOption
+		}{
+			"ordered":   {failAt: 0, opts: []chunkflow.StepOption{chunkflow.WithParallel(4)}},
+			"unordered": {failAt: 3, opts: []chunkflow.StepOption{chunkflow.WithParallel(4), chunkflow.WithUnordered()}},
+		} {
+			t.Run(name, func(t *testing.T) {
+				defer goleak.VerifyNone(t)
 
-		boom := errors.New("boom")
-		_, err := chunkflow.
-			New(ctx).Seq(seq.Numbers(0)).
-			MapCtx(func(ctx context.Context, i int) (int, error) {
-				if i == 3 {
-					return 0, boom
-				}
-				// Everyone else hangs until the failure cancels the stage.
-				return blockUntilCancelled(ctx, i)
-			}, chunkflow.WithParallel(4)).
-			Collect()
+				boom := errors.New("boom")
+				_, err := chunkflow.
+					New(ctx).Seq(seq.Numbers(0)).
+					MapCtx(func(ctx context.Context, i int) (int, error) {
+						if i == tc.failAt {
+							return 0, boom
+						}
+						// Everyone else hangs until the failure cancels the stage.
+						return blockUntilCancelled(ctx, i)
+					}, tc.opts...).
+					Collect()
 
-		require.ErrorIs(t, err, boom)
+				require.ErrorIs(t, err, boom)
+			})
+		}
 	})
 
 	t.Run("upstream error arrives while workers are busy", func(t *testing.T) {
-		defer goleak.VerifyNone(t)
-
 		boom := errors.New("upstream")
-		src := func(yield func(int, error) bool) {
-			for i := range 8 {
-				if !yield(i, nil) {
-					return
+		// Ordered: an upstream error keeps its position, so behind blocked predecessors it
+		// would wait like any other element; it has to come first. Unordered: it overtakes.
+		for name, tc := range map[string]struct {
+			errAt int
+			opts  []chunkflow.StepOption
+		}{
+			"ordered":   {errAt: 0, opts: []chunkflow.StepOption{chunkflow.WithParallel(4)}},
+			"unordered": {errAt: 8, opts: []chunkflow.StepOption{chunkflow.WithParallel(4), chunkflow.WithUnordered()}},
+		} {
+			t.Run(name, func(t *testing.T) {
+				defer goleak.VerifyNone(t)
+
+				src := func(yield func(int, error) bool) {
+					for i := range 9 {
+						if i == tc.errAt {
+							if !yield(0, boom) {
+								return
+							}
+							continue
+						}
+						if !yield(i, nil) {
+							return
+						}
+					}
 				}
-			}
-			yield(0, boom)
+
+				_, err := chunkflow.
+					New(ctx).Seq2(src).
+					MapCtx(blockUntilCancelled[int], tc.opts...).
+					Collect()
+
+				require.ErrorIs(t, err, boom)
+			})
 		}
-
-		_, err := chunkflow.
-			New(ctx).Seq2(src).
-			MapCtx(blockUntilCancelled[int], chunkflow.WithParallel(4)).
-			Collect()
-
-		require.ErrorIs(t, err, boom)
 	})
 
 	t.Run("chained parallel stages short-circuited downstream", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
 
 		res, err := chunkflow.
-			New(ctx).Seq(seq.Numbers(0)).
+			New(ctx).
+			Seq(seq.Numbers(0)).
 			MapCtx(func(_ context.Context, i int) (int, error) { return i + 1, nil }, chunkflow.WithParallel(3)).
 			FilterCtx(func(_ context.Context, i int) (bool, error) { return i%2 == 0, nil }, chunkflow.WithParallel(2)).
-			Chunk[[]int](5).
+			Chunk(5).
 			Through(chunkflow.Flatten).
 			Take(10).
 			Collect()

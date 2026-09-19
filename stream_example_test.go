@@ -71,9 +71,24 @@ func ExampleStream_MapCtx_parallel() {
 
 	square := func(_ context.Context, i int) (int, error) { return i * i, nil }
 
-	// With WithParallel(n) the output order is not guaranteed, so reduce instead of collecting.
-	sum, err := chunkflow.New(ctx).Seq(seq.RangeInclusive(1, 100)).
+	// Four workers, results still in source order: the parallel step is a drop-in for the
+	// sequential one.
+	squares, err := chunkflow.New(ctx).Seq(seq.RangeInclusive(1, 6)).
 		MapCtx(square, chunkflow.WithParallel(4)).
+		Collect()
+
+	fmt.Println(squares, err)
+	// Output: [1 4 9 16 25 36] <nil>
+}
+
+func ExampleWithUnordered() {
+	ctx := context.Background()
+
+	// When only the total matters, WithUnordered lets fast items overtake slow ones instead
+	// of waiting for them; the fold below is order-independent, so nothing is lost.
+	square := func(_ context.Context, i int) (int, error) { return i * i, nil }
+	sum, err := chunkflow.New(ctx).Seq(seq.RangeInclusive(1, 100)).
+		MapCtx(square, chunkflow.WithParallel(4), chunkflow.WithUnordered()).
 		Reduce(0, func(acc, item int) int { return acc + item })
 
 	fmt.Println(sum, err)

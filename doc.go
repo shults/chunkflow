@@ -63,8 +63,9 @@
 // # Options
 //
 // Two kinds exist. A StepOption configures one *Ctx call: WithParallel(n) sets the
-// worker count of MapCtx, FilterCtx or TapCtx (default 1; with n > 1 the output order of
-// that step is not guaranteed). An Option configures the whole pipeline through Opts
+// worker count of MapCtx, FilterCtx or TapCtx (default 1; results keep source order, at
+// the cost of a bounded reorder window), WithUnordered lets such a step emit results as
+// they arrive instead. An Option configures the whole pipeline through Opts
 // and is inherited downstream: every StepOption also works as an Option (a default
 // worker count), and WithOnError(fn) registers the hook that terminal operations call for
 // every error they handle, suppressed ones included, so logging and metrics need no

@@ -49,8 +49,16 @@ type pipelineOption func(*options)
 func (f pipelineOption) applyPipeline(o *options) { f(o) }
 
 // WithParallel sets the number of concurrent workers used by MapCtx, FilterCtx and TapCtx.
-// With n > 1 the output order of that step is not guaranteed. A value below 1 is invalid:
-// the stream it is applied to emits a single error and ends.
+// Results are emitted in source order regardless of n, so a parallel step is
+// indistinguishable from a sequential one except for speed; see WithUnordered to trade
+// that for throughput. A value below 1 is invalid: the stream it is applied to emits a
+// single error and ends.
+//
+// Ordering has a price. A finished item waits for its slower predecessors, and the
+// step reads ahead of the slowest one by a bounded window (currently 2n items pulled
+// from the source and not yet emitted); once the window is full, idle workers wait
+// rather than pull. One very slow item therefore stalls the whole step behind it,
+// with memory bounded by the window.
 func WithParallel(concurrency int) StepOption {
 	return func(o *options) {
 		if concurrency < 1 {
@@ -58,6 +66,17 @@ func WithParallel(concurrency int) StepOption {
 			return
 		}
 		o.concurrency = concurrency
+	}
+}
+
+// WithUnordered lets a parallel step (WithParallel(n > 1)) emit results as workers
+// finish them instead of in source order. Use it when the consumer does not care about
+// order, typically side-effect pipelines ending in Drain, to avoid head-of-line blocking:
+// no result ever waits for a slower predecessor. A downstream CircuitBreaker then counts
+// consecutive errors in arrival order. It has no effect on a single worker.
+func WithUnordered() StepOption {
+	return func(o *options) {
+		o.unordered = true
 	}
 }
 
@@ -163,8 +182,9 @@ func (s Stream[T]) Map[R any](mapFn func(T) R) Stream[R] {
 }
 
 // MapCtx transforms each element using a context-aware function that may fail.
-// With WithParallel(n > 1) elements are processed by n workers and the output order
-// is not guaranteed. The first error terminates the stream.
+// With WithParallel(n > 1) elements are processed by n workers; results, errors included,
+// still come out in source order unless WithUnordered is given (see WithParallel for the
+// cost of ordering). The first error terminates the stream.
 //
 // Shutdown is not instantaneous: when a terminal stops because of a fatal error (or
 // a consumer breaks out of Seq), workers that are already inside mapFn finish that
@@ -179,7 +199,7 @@ func (s Stream[T]) MapCtx[R any](mapFn func(ctx context.Context, item T) (R, err
 	}
 
 	if o.concurrency > 1 {
-		return s.derive(s.mapCtxConcurrent(mapFn, o.concurrency))
+		return s.derive(s.mapCtxConcurrent(mapFn, o))
 	}
 
 	return s.derive(func(yield func(result[R]) bool) {
@@ -213,9 +233,10 @@ func (s Stream[T]) Tap(fn func(T)) Stream[T] {
 
 // TapCtx invokes a context-aware fn for every value and passes the value through
 // unchanged. An error returned by fn replaces the value with that error in the
-// stream. With WithParallel(n > 1) fn runs on n workers and the output order is not
-// guaranteed, exactly as for MapCtx; so is the shutdown behaviour documented there,
-// which matters most here because TapCtx exists for side effects.
+// stream. With WithParallel(n > 1) fn runs on n workers with the ordering and shutdown
+// behaviour documented on MapCtx; the latter matters most here, because TapCtx exists for
+// side effects. WithUnordered is the natural companion when the order of those side
+// effects is irrelevant.
 func (s Stream[T]) TapCtx(fn func(ctx context.Context, item T) error, opts ...StepOption) Stream[T] {
 	return s.MapCtx(func(ctx context.Context, item T) (T, error) {
 		return item, fn(ctx, item)
@@ -230,9 +251,9 @@ func (s Stream[T]) Filter(predicate func(T) bool) Stream[T] {
 }
 
 // FilterCtx emits only the elements for which the context-aware predicate returns true.
-// With WithParallel(n > 1) predicates are evaluated by n workers and the output order
-// is not guaranteed, and after a fatal error the pool may still evaluate the predicate
-// on up to n buffered items before it shuts down (see MapCtx). The first error
+// With WithParallel(n > 1) predicates are evaluated by n workers, in source order unless
+// WithUnordered is given, and after a fatal error the pool may still evaluate the
+// predicate on buffered items before it shuts down (see MapCtx). The first error
 // terminates the stream.
 func (s Stream[T]) FilterCtx(predicate func(ctx context.Context, item T) (bool, error), opts ...StepOption) Stream[T] {
 	o := s.getOptions(opts...)
@@ -278,7 +299,7 @@ func (s Stream[T]) FilterCtx(predicate func(ctx context.Context, item T) (bool, 
 	inner := s.mapCtxConcurrent(func(ctx context.Context, item T) (filtered, error) {
 		match, err := predicate(ctx, item)
 		return filtered{val: item, match: match}, err
-	}, o.concurrency)
+	}, o)
 
 	return s.derive(func(yield func(result[T]) bool) {
 		for res := range inner {
@@ -507,7 +528,8 @@ func (s Stream[T]) Through[R any](transform func(Stream[T]) Stream[R]) Stream[R]
 // context.DeadlineExceeded) and recovered panics (ErrPanic) are never suppressed: they
 // pass through and end the stream.
 //
-// After a parallel stage the notion of "consecutive" follows arrival order, not source order.
+// After a parallel stage "consecutive" follows source order, which is what the stage emits
+// unless it runs WithUnordered; then it follows arrival order.
 func (s Stream[T]) CircuitBreaker(maxConsecutiveFailures int) Stream[T] {
 	if maxConsecutiveFailures < 1 {
 		return s.errStream[T](fmt.Errorf("threshold must be >= 1"))
@@ -836,15 +858,28 @@ type result[T any] struct {
 // operation that consumes the options turns it into a stream emitting that error.
 type options struct {
 	concurrency int
-	onError     func(error)
-	err         error
+	// unordered lets a parallel step emit results as they arrive instead of in source order.
+	unordered bool
+	// readAhead bounds the reorder window of an ordered parallel step to readAhead*concurrency
+	// items pulled from the source and not yet emitted. Not user-settable yet; the default
+	// keeps every worker busy while the head-of-line item is only as slow as its neighbours.
+	readAhead int
+	onError   func(error)
+	err       error
 }
 
 func defaultOptions() options {
 	return options{
 		concurrency: 1,
+		readAhead:   2,
 		onError:     func(error) {},
 	}
+}
+
+// window is the number of items an ordered parallel step may hold between the source
+// and its output.
+func (o options) window() int {
+	return o.readAhead * o.concurrency
 }
 
 // mergeContexts returns a context that carries the values and deadline of the first
@@ -941,14 +976,121 @@ func (b Builder) stream[T any](seq iter.Seq[result[T]]) Stream[T] {
 	return Stream[T]{options: defaultOptions(), ctx: b.ctx, seq: seq}
 }
 
-// mapCtxConcurrent is the WithParallel(n > 1) path of MapCtx and FilterCtx,
-// returned as a bare sequence so callers can wrap it in any element type. It wires three kinds
-// of goroutines: a feeder that reads the upstream sequence into inChan (forwarding
-// upstream errors straight to outChan), n workers that apply mapFn and push results to
-// outChan, and a closer that closes outChan once every writer has exited. Every writer
-// is tracked by the WaitGroup so the channel is never closed under a live sender.
-// A consumer stopping early cancels ctx, which releases all of them.
-func (s Stream[T]) mapCtxConcurrent[R any](mapFn func(ctx context.Context, item T) (R, error), concurrency int) iter.Seq[result[R]] {
+// mapCtxConcurrent is the WithParallel(n > 1) path of MapCtx and FilterCtx, returned as
+// a bare sequence so callers can wrap it in any element type. Ordered by default;
+// WithUnordered selects the cheaper pool that emits results as they arrive.
+func (s Stream[T]) mapCtxConcurrent[R any](mapFn func(ctx context.Context, item T) (R, error), o options) iter.Seq[result[R]] {
+	if o.unordered {
+		return s.mapCtxUnordered(mapFn, o.concurrency)
+	}
+	return s.mapCtxOrdered(mapFn, o.concurrency, o.window())
+}
+
+// ticket is the slot reserved for one source element in an ordered pool. The channel
+// has room for exactly one result, so whoever fills it never blocks.
+type ticket[T, R any] struct {
+	value T
+	done  chan result[R]
+}
+
+// mapCtxOrdered runs mapFn on n workers and emits results in source order. The feeder
+// numbers nothing: it creates one ticket per element, pushes the ticket into the ordered
+// queue and, for values, also hands it to a worker through inChan; upstream errors get a
+// pre-filled ticket and never see a worker. The emitter walks the queue in order and blocks
+// on each ticket, so results are reordered without a heap. The window semaphore bounds the
+// items pulled from the source and not yet emitted to k: the feeder takes a permit before
+// every pull, the emitter returns one after every yield. A consumer stopping early cancels
+// ctx, which releases the feeder and the workers; a worker that is mid-callback finishes
+// it and drops the result into a buffered channel, so nothing blocks on the way out.
+func (s Stream[T]) mapCtxOrdered[R any](mapFn func(ctx context.Context, item T) (R, error), concurrency, k int) iter.Seq[result[R]] {
+	return func(yield func(result[R]) bool) {
+		ctx, cancel := context.WithCancel(s.ctx)
+		defer cancel()
+
+		// At most k items are in flight (the window permits), and every one of them occupies
+		// at most one slot in queue and one in inChan, so with capacity k neither send below
+		// can block; the window is the only place where the feeder waits.
+		queue := make(chan ticket[T, R], k)
+		inChan := make(chan ticket[T, R], k)
+		window := make(chan struct{}, k)
+
+		// feeder
+		go func() {
+			defer close(queue)
+			defer close(inChan)
+			acquire := func() bool {
+				select {
+				case window <- struct{}{}:
+					return true
+				case <-ctx.Done():
+					return false
+				}
+			}
+			if !acquire() {
+				return
+			}
+			for item := range s.seq {
+				t := ticket[T, R]{value: item.value, done: make(chan result[R], 1)}
+				queue <- t
+				if item.err != nil {
+					t.done <- result[R]{err: item.err}
+				} else {
+					inChan <- t
+				}
+				if !acquire() { // permit for the next pull
+					return
+				}
+			}
+		}()
+
+		// workers
+		for range concurrency {
+			go func() {
+				var inCallback bool
+				var cur ticket[T, R]
+				// A panicking worker reports the panic in the ticket it was working on and
+				// exits; the consumer treats ErrPanic as fatal and cancels the rest of the pool.
+				defer guardPanics(&inCallback, func(err error) { cur.done <- result[R]{err: err} })
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case t, ok := <-inChan:
+						if !ok {
+							return
+						}
+						cur = t
+						inCallback = true
+						res, err := mapFn(ctx, t.value)
+						inCallback = false
+						t.done <- result[R]{value: res, err: err}
+					}
+				}
+			}()
+		}
+
+		// emitter
+		for t := range queue {
+			if !yield(<-t.done) {
+				return
+			}
+			<-window
+		}
+		// The feeder bails out silently on ctx.Done(); make sure a cancellation of the
+		// stream context still surfaces to the consumer as an error.
+		if err := s.ctx.Err(); err != nil {
+			yield(result[R]{err: err})
+		}
+	}
+}
+
+// mapCtxUnordered is the WithUnordered pool. It wires three kinds of goroutines: a feeder
+// that reads the upstream sequence into inChan (forwarding upstream errors straight to
+// outChan), n workers that apply mapFn and push results to outChan, and a closer that
+// closes outChan once every writer has exited. Every writer is tracked by the WaitGroup
+// so the channel is never closed under a live sender. A consumer stopping early cancels
+// ctx, which releases all of them.
+func (s Stream[T]) mapCtxUnordered[R any](mapFn func(ctx context.Context, item T) (R, error), concurrency int) iter.Seq[result[R]] {
 	return func(yield func(result[R]) bool) {
 		ctx, cancel := context.WithCancel(s.ctx)
 		defer cancel()

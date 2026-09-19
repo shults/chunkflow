@@ -19,8 +19,12 @@ err := chunkflow.New(ctx).Chan(userIDs).                 // any iter.Seq, iter.S
   passes `context.Background()` and ignores the error it knows cannot happen.
 - **Lazy and bounded.** Every intermediate operation is a closure over the upstream iterator;
   nothing runs until a terminal pulls, and nothing is buffered except by `Chunk` (bounded by its
-  size) and by worker pools (bounded by `WithParallel`). `Take`, `First`, `Any` and `All` stop the
-  source as soon as they can.
+  size) and by worker pools (bounded by twice `WithParallel`). `Take`, `First`, `Any` and `All`
+  stop the source as soon as they can.
+- **Parallel, still in order.** `WithParallel(n)` runs a step on `n` workers and emits results in
+  source order, so `MapCtx(f, WithParallel(8)).Collect()` returns what the sequential version
+  would, only faster. One slow item holds back its successors; `WithUnordered()` gives that up for
+  throughput when the consumer does not care about order.
 - **Errors are data.** An error from a source or a callback flows down the pipeline as an element.
   Operators pass it along and keep working on values; terminals stop at the first one. Only
   `CircuitBreaker` tolerates errors, and it marks rather than drops them, so nothing is lost.
@@ -129,7 +133,7 @@ Lazy; nothing runs until a terminal pulls. Each `*Ctx` variant takes a callback 
 
 | Method | Signature | Notes |
 | --- | --- | --- |
-| `Map` / `MapCtx` | `Map[R](func(T) R)` · `MapCtx[R](func(ctx, T) (R, error), ...StepOption)` | `WithParallel(n)` runs the callback on `n` workers; order is not preserved for `n > 1`. |
+| `Map` / `MapCtx` | `Map[R](func(T) R)` · `MapCtx[R](func(ctx, T) (R, error), ...StepOption)` | `WithParallel(n)` runs the callback on `n` workers, results in source order; `WithUnordered()` emits them as they arrive. |
 | `Filter` / `FilterCtx` | `Filter(func(T) bool)` · `FilterCtx(func(ctx, T) (bool, error), ...StepOption)` | Same concurrency semantics as `MapCtx`. |
 | `Tap` / `TapCtx` | `Tap(func(T))` · `TapCtx(func(ctx, T) error, ...StepOption)` | Side effect, element passes through; an error from `TapCtx` replaces the element. |
 | `Take` / `Skip` | `Take(n)` · `Skip(n)` | Count values, not errors. `Take` stops pulling from the source. |
@@ -174,8 +178,13 @@ together with whatever was produced so far.
 
 Two kinds, checked by the compiler:
 
-- `StepOption` configures one `*Ctx` call: `WithParallel(n)`. Passing it to `Opts` makes it the
-  default for everything downstream.
+- `StepOption` configures one `*Ctx` call: `WithParallel(n)` and `WithUnordered()`. Passing it to
+  `Opts` makes it the default for everything downstream.
+  - `WithParallel(n)` keeps source order. The step reads ahead of the slowest item by a window of
+    `2n` items; when the window is full, idle workers wait instead of pulling, so memory stays
+    bounded and a single slow item stalls the step behind it (head-of-line blocking).
+  - `WithUnordered()` drops the ordering and the window: results leave as workers finish them, and a
+    downstream `CircuitBreaker` counts consecutive errors in arrival order.
 - `Option` configures the whole pipeline only: `WithOnError(fn)` registers the hook every terminal
   calls for each error it handles, suppressed ones just before skipping them, the fatal one just
   before returning it. It is the place for logging and metrics.

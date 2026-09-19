@@ -41,6 +41,14 @@ new convention is introduced or an old one is changed; a convention without a re
   processing. Invariant: `s.Op(...).Collect()` equals `Op` applied to `s.Collect()` as long as no
   fatal error occurs. *Why:* one rule for every operator instead of a per-operator debate; it is the
   only rule that closes over all operators (`Chunk` cannot put an error into a slice).
+- **Parallel steps keep source order by default.** `WithParallel(n)` reorders results behind a
+  bounded window (`2n` items pulled and not yet emitted, the multiplier lives in `options` and has
+  no public setter until someone needs one); `WithUnordered()` opts out. *Why:* it keeps the
+  invariant above without an exception for parallel stages, and it matches what every parallel-map
+  API defaults to (`Pool.map` vs `imap_unordered`, rayon's `collect`, Java's ordered
+  `parallelStream().toList()`): correctness by default, throughput by choice. The price,
+  head-of-line blocking, is documented on `WithParallel` and is paid only by pipelines that would
+  otherwise have had to sort.
 - **Errors flow, terminals decide.** An error is an element. Terminal operations stop at the first
   error that is not marked `ErrSuppressed`. Only `CircuitBreaker` marks errors as tolerated; it never
   drops or logs them, so `Seq()` shows everything. *Why:* silent data loss is the worst failure mode

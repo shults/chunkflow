@@ -31,24 +31,15 @@ Goal: fix the shapes that are awkward now, while nobody depends on them, then fr
 - [x] `New(ctx)` without options. `New(ctx, opts...)` and `Stream.Opts(opts...)` were two ways to do
       one thing; the source methods (`Seq`, `Seq2`, `Chan`) use no options, so nothing is lost by
       `New(ctx).Chan(ch).Opts(WithParallel(8))`. The builder now holds only the context
-- [ ] `WithOrdered()` option for `MapCtx` / `FilterCtx` / `TapCtx` — preserve input order under
-      `WithParallel(n > 1)`
-  - sliding window: `n` workers pull freely, but results are emitted strictly in source order;
-    a finished item whose predecessors are still running waits in a reorder buffer
-  - bounded read-ahead via `WithWindow(k)` (default `k = 2n`): at most `k` items may be pulled from
-    the source and not yet emitted; when the window is full, idle workers wait instead of pulling.
-    Keeps memory O(k) even when the head-of-line item is slow
-  - implementation sketch: the feeder numbers items and creates a one-shot result channel per item,
-    pushing those channels in order into a queue of capacity `k` (this is the backpressure); workers
-    take `(item, resultChan)` from the input channel and fill it; the emitter reads the queue in order
-    and blocks on each channel
-  - errors are ordinary results at their own position, so a downstream `CircuitBreaker` sees failures
-    in source order rather than arrival order
-  - cost to document: head-of-line blocking — one slow item stalls emission (and, once the window is
-    full, the workers) behind it; that is the price of ordering, hence opt-in, never default
-  - tests: order preserved under random per-item delays; window bound respected (source pulls never
-    exceed emitted + k); leak-free on short-circuit and cancellation (goleak); `Take(1)` after an
-    ordered stage stops the pool
+- [x] ordered parallel steps. Planned as an opt-in `WithOrdered()`; shipped the other way round:
+      `WithParallel(n > 1)` keeps source order by default and `WithUnordered()` opts out (reasons
+      in CONVENTIONS.md). Implementation: one-shot result channel per element pushed in order
+      into a queue, a window semaphore of `k = 2n` permits bounds items pulled and not yet
+      emitted, upstream errors get a pre-filled ticket and keep their position. The multiplier
+      is a field in `options` with no public setter; ~~`WithWindow(k)`~~ waits in the parking lot
+      until someone with a lot of RAM and high I/O variance asks for it. Tests: order under random
+      delays, window bound, errors in source order through `CircuitBreaker`, panic at its position,
+      `Take(1)`, cancellation, goleak everywhere; the unordered pool keeps its own tests
 - [x] API trim review before the freeze — every exported name must defend its place. Outcome:
   - `Count()` stays: a one-line `Reduce`, but the most common terminal after `Collect` and present
     in every stream library
@@ -107,6 +98,10 @@ Ideas without a decision. They enter a phase only with a concrete use case.
   point either generalise to `OnError(policy)` + `Suppress`, or accept two concrete operators. If it
   happens, `CircuitBreaker` moves to a neighbouring sub-package so the core stays `Stream`, the
   builder and the terminals
+- a public setter for the read-ahead multiplier of ordered parallel steps (`options.readAhead`,
+  default 2). Shape if picked up: a `StepOption` taking a multiplier, not an absolute size, so the
+  window can never be smaller than the worker count. Use case to wait for: plenty of memory and
+  high latency variance per call, where a wider window keeps workers busy behind a slow item
 - an opt-in context-free, error-free stream type for pure in-memory work, if the ~2x overhead ever
   matters to someone; `memStream` in `bench_test.go` is the starting point
 - fuzz tests for `Chunk` + `Flatten` round trip
