@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/shults/chunkflow"
+	"github.com/shults/chunkflow/policy"
 	"github.com/shults/chunkflow/seq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -211,7 +212,7 @@ func TestStream_PredicateErrors(t *testing.T) {
 				// predicate fails on 3; upstream source fails after 6 items
 				res, err := chunkflow.New(ctx).Seq2(errAfter(6, errBoom)).
 					FilterCtx(failOn(3), opts...).
-					Through(chunkflow.CircuitBreaker[int](100)).
+					Through(policy.CircuitBreaker[int](100)).
 					Collect()
 				require.NoError(t, err)
 				assert.ElementsMatch(t, []int{0, 1, 2, 4, 5}, res)
@@ -246,7 +247,7 @@ func TestStream_AllAnyEdgeCases(t *testing.T) {
 	onlySuppressed := func() chunkflow.Stream[int] {
 		return chunkflow.New(ctx).Seq(seq.Range(0, 5)).
 			MapCtx(func(context.Context, int) (int, error) { return 0, errBoom }).
-			Through(chunkflow.CircuitBreaker[int](100))
+			Through(policy.CircuitBreaker[int](100))
 	}
 
 	for name, stream := range map[string]func() chunkflow.Stream[int]{
@@ -334,7 +335,7 @@ func TestStream_FailFastStopsEveryStage(t *testing.T) {
 			return s.Chunk[[]int](2).Through(chunkflow.Flatten)
 		},
 		"CircuitBreaker(1)": func(s chunkflow.Stream[int]) chunkflow.Stream[int] {
-			return s.Through(chunkflow.CircuitBreaker[int](1))
+			return s.Through(policy.CircuitBreaker[int](1))
 		},
 	}
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/shults/chunkflow"
+	"github.com/shults/chunkflow/policy"
 	"github.com/shults/chunkflow/seq"
 )
 
@@ -170,52 +171,6 @@ func ExampleStream_Chunk_deduplication() {
 	// <nil>
 }
 
-func ExampleCircuitBreaker() {
-	ctx := context.Background()
-	errFlaky := errors.New("flaky")
-
-	fetch := func(_ context.Context, i int) (int, error) {
-		if i == 3 || i == 4 {
-			return 0, errFlaky
-		}
-		return i * 10, nil
-	}
-
-	// Up to 2 consecutive failures are tolerated; the 3rd in a row would trip the breaker.
-	got, err := chunkflow.New(ctx).Seq(seq.Range(1, 7)).
-		MapCtx(fetch).
-		Through(chunkflow.CircuitBreaker[int](3)).
-		Collect()
-
-	fmt.Println(got, err)
-	// Output: [10 20 50 60] <nil>
-}
-
-func ExampleCircuitBreaker_tripped() {
-	ctx := context.Background()
-	errDown := errors.New("service down")
-
-	fetch := func(_ context.Context, i int) (int, error) {
-		if i >= 3 {
-			return 0, errDown
-		}
-		return i, nil
-	}
-
-	got, err := chunkflow.New(ctx).Seq(seq.Numbers(1)). // infinite source
-								MapCtx(fetch).
-								Through(chunkflow.CircuitBreaker[int](3)).
-								Collect()
-
-	fmt.Println(got)
-	fmt.Println(err)
-	fmt.Println(errors.Is(err, errDown))
-	// Output:
-	// [1 2]
-	// circuit breaker tripped after 3 consecutive errors: service down
-	// true
-}
-
 func ExampleStream_Seq() {
 	ctx := context.Background()
 	errOdd := errors.New("odd")
@@ -230,7 +185,7 @@ func ExampleStream_Seq() {
 	// Seq exposes suppressed errors instead of hiding them, so the consumer can
 	// count or log what the breaker tolerated.
 	tolerated := 0
-	for v, err := range chunkflow.New(ctx).Seq(seq.Range(0, 6)).MapCtx(rejectOdd).Through(chunkflow.CircuitBreaker[int](2)).Seq() {
+	for v, err := range chunkflow.New(ctx).Seq(seq.Range(0, 6)).MapCtx(rejectOdd).Through(policy.CircuitBreaker[int](2)).Seq() {
 		switch {
 		case err == nil:
 			fmt.Println("value", v)

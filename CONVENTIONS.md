@@ -50,20 +50,20 @@ new convention is introduced or an old one is changed; a convention without a re
   head-of-line blocking, is documented on `WithParallel` and is paid only by pipelines that would
   otherwise have had to sort.
 - **Errors flow, terminals decide.** An error is an element. Terminal operations stop at the first
-  error that is not marked `ErrSuppressed`. Two things may mark an error: `CircuitBreaker` below its
-  threshold and a callback returning `Suppress(err)`; neither drops or logs it, so `Seq()` shows
-  everything. *Why:* silent data loss is the worst failure mode of a pipeline; observability stays
+  error that is not marked `ErrSuppressed`. Only `Suppress` marks an error, whether called by a
+  callback or by a policy such as `policy.CircuitBreaker`; nobody drops or logs it, so `Seq()`
+  shows everything. *Why:* silent data loss is the worst failure mode of a pipeline; observability stays
   with the consumer. Context errors and `ErrPanic` are refused by both, at construction, so an error
   that matches `ErrSuppressed` is always one the terminals will skip.
-- **The error model lives in the root, policies do not.** The root owns `ErrSuppressed`, `ErrPanic`,
-  `ErrEmpty`, `Suppress` and `CircuitBreaker`, the one policy that gives `ErrSuppressed` its
-  meaning. Anything that only *uses* the model (retry, rate limiting, an in-stream error logger)
-  enters through a sub-package and `Through`, once it has a use case. *Why:* the breaker is not a
-  policy bolted on, it is how tolerance is defined; everything else is a plug-in and stays a minor
-  version away instead of a breaking change.
+- **The error model lives in the root, policies do not.** The root owns the sentinels
+  (`ErrSuppressed`, `ErrPanic`, `ErrEmpty`), `Suppress` and the seam `Transform`; that is the whole
+  vocabulary for tolerating errors. Everything that *decides* which errors to tolerate, starting
+  with `CircuitBreaker`, lives in `policy` and is written on that public seam and nothing else.
+  *Why:* the first policy walks the same path a third-party extension would, so the seam is proven
+  sufficient by construction, and new policies are a minor version, never a breaking change.
 - **Panics in callbacks become `ErrPanic` errors, never re-panics.** Recovered once per stage
   (also inside workers) with the callback boundary marked by a bool, pushed downstream in position,
-  never suppressed by `CircuitBreaker`, returned by every terminal. *Why:* `recover` only works on
+  refused by `Suppress`, returned by every terminal. *Why:* `recover` only works on
   the panicking goroutine, so a worker panic can only be reported as data; doing the same on the
   sequential path keeps `WithParallel(1)` and `WithParallel(8)` — and `Seq()` consumers — behaving
   identically. One guard per stage instead of per element: the per-element `defer recover()` cost
@@ -71,20 +71,35 @@ new convention is introduced or an old one is changed; a convention without a re
 - **Type-changing operations are top-level functions used via `Through`.** A method cannot add a
   constraint on the receiver's type parameter (`Flatten` needs `Stream[[]E]`, `Compact` needs
   `comparable`), and Go has no overloading. `Through` keeps the left-to-right reading order.
-- **Error policies are top-level functions used via `Through`, too.** `CircuitBreaker[T](n)` is not
+- **Error policies are functions used via `Through`, too.** `policy.CircuitBreaker[T](n)` is not
   a method although a method would compile: it does not operate on values, it decides what an error
-  means, and every policy, in this package or outside it, should enter the chain the same way. The
-  price is an explicit type argument, `Through(chunkflow.CircuitBreaker[User](5))`, because Go does
+  means, and every policy, in this module or outside it, should enter the chain the same way. The
+  price is an explicit type argument, `Through(policy.CircuitBreaker[User](5))`, because Go does
   not infer a call's type parameters from where its result is used (checked; a generic method value
   on an exported config type would infer, but exports a type for nothing).
+- **The extension seam is `iter.Seq2[T, error]`, not an exported element type.** `Transform` speaks
+  the same `(value, error)` pairs as `Seq()` and `Seq2`, so an extension author writes an ordinary
+  `for v, err := range in` loop and no chunkflow type appears in the signature. *Why:* an exported
+  `Result[T]` would be a one-way door for a struct that carries no behaviour; the native pair is
+  already the representation at every other boundary.
+- **Two extension families, two seams.** A *policy* is `func(Stream[T]) Stream[T]`, enters through
+  `Through`, sees results and their position in the chain and can tolerate, replace or end, but
+  cannot re-run anything (`policy.CircuitBreaker`). A *step decorator* wraps the callback itself,
+  `func(ctx, T) (R, error)` in and out, enters as the argument of `MapCtx`, sees the call and can
+  repeat it, bound it in time or measure it (`Retry`, `Timeout`). A decorator needs nothing from
+  this module, the callback signature is plain Go, so it can live anywhere; it must not retry
+  context errors or errors already marked by `Suppress`, since the caller has decided. The two
+  compose: `MapCtx(retry(3, fetch), WithParallel(8)).Through(policy.CircuitBreaker[User](5))` is
+  three attempts per element, then a breaker over five elements in a row. *Why:* one mechanism
+  cannot express both, a stream transform sees only outcomes, a wrapper sees only one call.
 - **Generic methods introduce new type parameters** (`Map[R]`, `Chunk[R]`, `Seq[T]` on the builder)
   wherever the receiver's own parameters suffice as constraints. This is the language feature the
   library is built on; use it before reaching for a top-level function.
 - **Minimal exported surface.** No struct is exported to carry internal state (the breaker's
   suppressed-error struct is private; only the `ErrSuppressed` sentinel is public). An exported type
   is a one-way door: adding one later is free, removing one is a breaking change.
-- **Rule of three.** Do not generalise from one case. `CircuitBreaker` stays a concrete function until
-  a second error policy shows up; `Zip3` is not added until someone needs it; there is no `Distinct`
+- **Rule of three.** Do not generalise from one case. `policy.CircuitBreaker` stays the only policy
+  until a second one has a use case; `Zip3` is not added until someone needs it; there is no `Distinct`
   because a global "seen" set belongs to the user's store, not inside the pipeline
   (see `ExampleStream_Chunk_deduplication`).
 - **Two option kinds, checked by the compiler.** `Option` configures a whole pipeline (`Opts`)

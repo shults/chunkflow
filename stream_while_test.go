@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/shults/chunkflow"
+	"github.com/shults/chunkflow/policy"
 	"github.com/shults/chunkflow/seq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,7 +32,7 @@ func TestStream_TakeWhile(t *testing.T) {
 		res, err := chunkflow.New(ctx).Seq(seq.Range(0, 10)).
 			MapCtx(failing).
 			TakeWhile(func(i int) bool { return i < 6 }).
-			Through(chunkflow.CircuitBreaker[int](100)).
+			Through(policy.CircuitBreaker[int](100)).
 			Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 1, 5}, res)
@@ -74,7 +75,7 @@ func TestStream_TakeWhile(t *testing.T) {
 				}
 				return i < 5, nil
 			}).
-			Through(chunkflow.CircuitBreaker[int](100)).
+			Through(policy.CircuitBreaker[int](100)).
 			Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 1, 3, 4}, res)
@@ -115,7 +116,7 @@ func TestStream_SkipWhile(t *testing.T) {
 		for v, err := range chunkflow.New(ctx).Seq(seq.Range(0, 10)).
 			MapCtx(failing).
 			SkipWhile(func(i int) bool { return i < 6 }).
-			Through(chunkflow.CircuitBreaker[int](100)).
+			Through(policy.CircuitBreaker[int](100)).
 			Seq() {
 			if err != nil {
 				require.ErrorIs(t, err, chunkflow.ErrSuppressed)
@@ -137,7 +138,7 @@ func TestStream_SkipWhile(t *testing.T) {
 				}
 				return i < 4, nil
 			}).
-			Through(chunkflow.CircuitBreaker[int](100)).
+			Through(policy.CircuitBreaker[int](100)).
 			Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{4, 5, 6, 7}, res)

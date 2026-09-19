@@ -42,13 +42,19 @@
 // stop at the first error they see, which makes a plain pipeline fail fast and
 // stop consuming the source right after the failing element.
 //
-// Errors are tolerated only when something says so. CircuitBreaker[T](n), an error policy
-// plugged in with Through, re-emits each error below its threshold wrapped so that errors.Is(err, ErrSuppressed) is true while
-// the original error stays in the chain; terminal operations skip such elements, and
-// consumers of Seq can still observe them. On the n-th consecutive error the breaker
-// trips with a fatal error. A callback that knows better returns Suppress(err) itself,
-// replacing that one element by the marked error; the breaker does not count it.
-// Context errors are never suppressed.
+// Errors are tolerated only when something says so. A callback returns Suppress(err),
+// replacing that one element by an error matching ErrSuppressed with the original in the
+// chain; terminal operations skip such elements, consumers of Seq can still observe them.
+// Policies do the same for whole streams: policy.CircuitBreaker[T](n), plugged in with
+// Through, tolerates errors below its threshold and trips with a fatal error on the n-th
+// consecutive one. Context errors are never suppressed.
+//
+// # Extensions
+//
+// Transform hands the raw (value, error) sequence, fatal errors included, to any function
+// and wraps the result back into a Stream with the same context and options; Suppress is the
+// only way to mark an error as tolerated. The policy package is written on exactly these two
+// and nothing else, so an extension in another module has the same tools.
 //
 // A panic inside a callback is recovered where it happens, also on worker goroutines,
 // and becomes an error matching ErrPanic that nothing may suppress. A bug therefore

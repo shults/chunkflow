@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shults/chunkflow"
+	"github.com/shults/chunkflow/policy"
 	"github.com/shults/chunkflow/seq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -108,7 +109,7 @@ func TestStream_Ordered(t *testing.T) {
 				}
 				return i, nil
 			}, chunkflow.WithParallel(workers)).
-			Through(chunkflow.CircuitBreaker[int](100)).
+			Through(policy.CircuitBreaker[int](100)).
 			Seq() {
 			switch {
 			case err == nil:

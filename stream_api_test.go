@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/shults/chunkflow"
+	"github.com/shults/chunkflow/policy"
 	"github.com/shults/chunkflow/seq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,7 +43,7 @@ func TestStream_AlignedWithStream(t *testing.T) {
 			New(ctx).Seq(seq.Range(0, 10)).
 			MapCtx(failing). // 2,3,4 fail
 			Tap(func(i int) { seen = append(seen, i) }).
-			Through(chunkflow.CircuitBreaker[int](100)).
+			Through(policy.CircuitBreaker[int](100)).
 			Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 1, 5, 6, 7, 8, 9}, res)
@@ -150,7 +151,7 @@ func TestStream_AlignedWithStream(t *testing.T) {
 		s := chunkflow.New(ctx).Seq(seq.Range(0, 3)).
 			Opts(chunkflow.WithOnError(func(err error) { seen = append(seen, err) })).
 			MapCtx(func(context.Context, int) (int, error) { return 0, errors.New("always") }).
-			Through(chunkflow.CircuitBreaker[int](10))
+			Through(policy.CircuitBreaker[int](10))
 
 		_, err := s.First()
 		require.ErrorIs(t, err, chunkflow.ErrEmpty)
@@ -294,7 +295,7 @@ func TestStream_Options(t *testing.T) {
 		res, err := chunkflow.New(ctx).Seq(seq.Range(0, 10)).
 			Opts(chunkflow.WithOnError(func(err error) { seen = append(seen, err) })).
 			MapCtx(failing). // 2,3,4 fail
-			Through(chunkflow.CircuitBreaker[int](3)).
+			Through(policy.CircuitBreaker[int](3)).
 			Collect()
 
 		require.ErrorIs(t, err, errBoom)
@@ -321,7 +322,7 @@ func TestStream_Options(t *testing.T) {
 		_, err := chunkflow.New(ctx).Seq(seq.Range(0, 5)).
 			Opts(chunkflow.WithOnError(func(error) { calls++ })).
 			MapCtx(failing). // 2,3,4 fail
-			Through(chunkflow.CircuitBreaker[int](100)).
+			Through(policy.CircuitBreaker[int](100)).
 			Skip(0).
 			Collect()
 		require.NoError(t, err)

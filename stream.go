@@ -17,8 +17,8 @@ import (
 // Error semantics: an error produced by the source or by a callback travels down the
 // pipeline as an element. Intermediate operations pass it through untouched and keep
 // processing the remaining input; they operate on values only and never interpret
-// errors. CircuitBreaker, or a callback returning Suppress(err), may mark an error as
-// tolerated (see ErrSuppressed). Terminal operations skip elements whose error matches
+// errors. A policy such as policy.CircuitBreaker, or a callback returning Suppress(err),
+// may mark an error as tolerated (see ErrSuppressed). Terminal operations skip elements whose error matches
 // ErrSuppressed and stop at the first other error, so a pipeline that tolerates nothing
 // behaves as "fail fast".
 //
@@ -73,8 +73,8 @@ func WithParallel(concurrency int) StepOption {
 // WithUnordered lets a parallel step (WithParallel(n > 1)) emit results as workers
 // finish them instead of in source order. Use it when the consumer does not care about
 // order, typically side-effect pipelines ending in Drain, to avoid head-of-line blocking:
-// no result ever waits for a slower predecessor. A downstream CircuitBreaker then counts
-// consecutive errors in arrival order. It has no effect on a single worker.
+// no result ever waits for a slower predecessor. A downstream policy.CircuitBreaker then
+// counts consecutive errors in arrival order. It has no effect on a single worker.
 func WithUnordered() StepOption {
 	return func(o *options) {
 		o.unordered = true
@@ -374,7 +374,7 @@ func (s Stream[T]) TakeWhile(predicate func(T) bool) Stream[T] {
 
 // TakeWhileCtx is TakeWhile with a context-aware predicate. A predicate error is
 // emitted as an error element; the stream continues and the predicate keeps being
-// evaluated on subsequent values, so a downstream CircuitBreaker can tolerate it.
+// evaluated on subsequent values, so a downstream policy can tolerate it.
 func (s Stream[T]) TakeWhileCtx(predicate func(ctx context.Context, item T) (bool, error)) Stream[T] {
 	return s.derive(func(yield func(result[T]) bool) {
 		var inCallback bool
@@ -513,14 +513,48 @@ func (s Stream[T]) Chunk[R []T](size int) Stream[R] {
 
 // Through pipes the current stream into an external transformation function.
 // It acts as a structural bridge to maintain fluent API chaining for operations that
-// must be implemented as top-level functions (like Flatten).
+// must be implemented as top-level functions (like Flatten) and for error policies
+// (like policy.CircuitBreaker).
 func (s Stream[T]) Through[R any](transform func(Stream[T]) Stream[R]) Stream[R] {
 	return transform(s)
 }
 
-// Seq returns the stream as a native (value, error) iterator. Elements tolerated by a
-// CircuitBreaker are yielded with an error matching ErrSuppressed; iteration stops after
-// the first error that is not suppressed.
+// Transform is the extension seam: it hands the raw element sequence to transform as a
+// native iter.Seq2[T, error] and wraps what comes back into a Stream that keeps this
+// stream's context and options. Unlike Seq, the raw sequence does not stop after a fatal
+// error; every element, values and errors alike, reaches transform, which may forward,
+// replace, drop or reorder them and may end the sequence early by returning. Together
+// with Suppress this is all an error policy needs; policy.CircuitBreaker is written on it
+// and nothing else.
+//
+// transform runs once, when the stream is built, and must only assemble the returned
+// iterator; state that has to start fresh on every iteration belongs inside that iterator.
+// Code in the returned iterator is not a callback: a panic there is not turned into
+// ErrPanic, it propagates. A nil transform yields a single error and ends.
+func (s Stream[T]) Transform[R any](transform func(iter.Seq2[T, error]) iter.Seq2[R, error]) Stream[R] {
+	if transform == nil {
+		return s.errStream[R](errors.New("chunkflow: Transform: nil transform"))
+	}
+	raw := func(yield func(T, error) bool) {
+		for item := range s.seq {
+			if !yield(item.value, item.err) {
+				return
+			}
+		}
+	}
+	out := transform(raw)
+	return s.derive(func(yield func(result[R]) bool) {
+		for v, err := range out {
+			if !yield(result[R]{value: v, err: err}) {
+				return
+			}
+		}
+	})
+}
+
+// Seq returns the stream as a native (value, error) iterator. Tolerated elements are
+// yielded with an error matching ErrSuppressed; iteration stops after the first error
+// that is not suppressed. To keep going past one, see Transform.
 func (s Stream[T]) Seq() iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		for item := range s.seq {
@@ -734,71 +768,6 @@ func (s Stream[T]) Last() (T, error) {
 // Stream.CompactFunc for the semantics and the sorted-or-grouped input precondition.
 func Compact[T comparable](stream Stream[T]) Stream[T] {
 	return stream.CompactFunc(func(a, b T) bool { return a == b })
-}
-
-// CircuitBreaker returns a transform for Through that tolerates up to
-// maxConsecutiveFailures-1 errors in a row and trips on the next one, interrupting the
-// stream with a wrapped error. A successful element resets the counter. The element type
-// cannot be inferred from the threshold, so it is spelled out:
-//
-//	users.Through(chunkflow.CircuitBreaker[User](5))
-//
-// It is a function rather than a method because it is an error policy, not an operation on
-// values; every policy enters the chain the same way.
-//
-// Tolerated errors are not dropped: they are re-emitted wrapped in an error matching
-// ErrSuppressed so that downstream terminal operations skip them while consumers of
-// Seq() can still observe them. Errors already marked as suppressed, by an upstream
-// breaker or by a callback via Suppress, pass through without affecting the counter. Context errors (context.Canceled,
-// context.DeadlineExceeded) and recovered panics (ErrPanic) are never suppressed: they
-// pass through and end the stream.
-//
-// After a parallel stage "consecutive" follows source order, which is what the stage emits
-// unless it runs WithUnordered; then it follows arrival order.
-func CircuitBreaker[T any](maxConsecutiveFailures int) func(Stream[T]) Stream[T] {
-	return func(s Stream[T]) Stream[T] {
-		if maxConsecutiveFailures < 1 {
-			return s.errStream[T](fmt.Errorf("chunkflow: CircuitBreaker(%d): threshold must be at least 1", maxConsecutiveFailures))
-		}
-		return s.derive(breakerSeq(s.seq, maxConsecutiveFailures))
-	}
-}
-
-// breakerSeq is the element-level logic of CircuitBreaker over a raw sequence.
-func breakerSeq[T any](seq iter.Seq[result[T]], maxConsecutiveFailures int) iter.Seq[result[T]] {
-	return func(yield func(result[T]) bool) {
-		consecutiveFailures := 0
-		for item := range seq {
-			switch {
-			case item.err == nil:
-				consecutiveFailures = 0
-			case isSuppressed(item.err):
-				// already handled by an upstream breaker; not ours to count
-			case neverSuppressed(item.err):
-				// bugs and cancellations are never tolerated: pass through and end
-				yield(item)
-				return
-			default:
-				consecutiveFailures++
-				if consecutiveFailures >= maxConsecutiveFailures {
-					yield(result[T]{
-						err: fmt.Errorf("circuit breaker tripped after %d consecutive errors: %w",
-							consecutiveFailures, item.err),
-					})
-					return
-				}
-				item = result[T]{err: &suppressedError{
-					err:                 item.err,
-					consecutiveFailures: consecutiveFailures,
-					threshold:           maxConsecutiveFailures,
-				}}
-			}
-
-			if !yield(item) {
-				return
-			}
-		}
-	}
 }
 
 // Concat emits every element of the first stream, then of the second, and so on.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/shults/chunkflow"
+	"github.com/shults/chunkflow/policy"
 	"github.com/shults/chunkflow/seq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -96,7 +97,7 @@ func TestStream_PanicsBecomeErrors(t *testing.T) {
 				}
 				return explode(ctx, i)
 			}).
-			Through(chunkflow.CircuitBreaker[int](100)).
+			Through(policy.CircuitBreaker[int](100)).
 			Collect()
 		require.ErrorIs(t, err, chunkflow.ErrPanic)
 		assert.Equal(t, []int{0, 2}, res, "1 was suppressed, 3 panicked and ended the stream")

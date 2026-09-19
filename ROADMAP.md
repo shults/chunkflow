@@ -61,10 +61,14 @@ Goal: fix the shapes that are awkward now, while nobody depends on them, then fr
     Kotlin, so whichever we picked would surprise half the users
   - ~~`Find(p)`~~ — `Filter(p).First()`, same laziness, same short-circuit; Java has no `find`
     either. Shown in `ExampleStream_First_find`
-- [x] `CircuitBreaker` is a top-level function for `Through`, not a method: it is an error policy,
-      not an operation on values (see CONVENTIONS.md). `Through(chunkflow.CircuitBreaker(5))` does
-      not compile, Go cannot infer `T` from the use of a call's result, hence
-      `Through(chunkflow.CircuitBreaker[User](5))`
+- [x] `CircuitBreaker` is a function for `Through`, not a method: it is an error policy, not an
+      operation on values (see CONVENTIONS.md). `Through(CircuitBreaker(5))` does not compile, Go
+      cannot infer `T` from the use of a call's result, hence `Through(policy.CircuitBreaker[User](5))`
+- [x] extension seam: `Stream.Transform[R](func(iter.Seq2[T, error]) iter.Seq2[R, error])` keeps
+      `ctx` and options and, unlike `Seq()`, does not stop at a fatal error. `CircuitBreaker` moved
+      to the `policy` sub-package and is written on `Transform` + `Suppress` only, so the seam is
+      proven by its first client. The suppressed-error struct lost its counters on the way; the
+      breaker wraps its own "failure 2/5" message before calling `Suppress`
 - [ ] tag `v0.1.0`
 
 ## Phase 4 — Measure the claims
@@ -106,13 +110,10 @@ Ideas without a decision. They enter a phase only with a concrete use case.
   ~~`KVStream`~~ was dropped: a dedicated type for a handful of helpers is not worth it
 - rate limiting / retry with backoff. `Retry` wraps `MapCtx` (it must re-run the upstream op), so
   it is not an error policy
-- **error policies as plug-ins**, e.g. `Through(policies.Retry(...))`. Decided: `CircuitBreaker`
-  stays in the root (it defines tolerance, see CONVENTIONS.md) but already has the plug-in shape,
-  a function for `Through`, and `Suppress` is exported, so a policy can mark errors. What is still missing is a raw view for a policy to iterate on: `Seq()`
-  stops after the first fatal error, so a plug-in that wants to *continue* past one (retry, a
-  breaker variant) needs something like `Stream.Transform(func(iter.Seq2[T, error]) iter.Seq2[T, error]) Stream[T]`
-  that keeps `ctx` and options. Both the method and the `policies` package are additive, hence a
-  minor version; they enter with the first concrete policy
+- **more policies** in `policy`, e.g. an in-stream error observer or a breaker with a time window.
+  The seam (`Transform`, `Suppress`) and the package exist; each new policy is additive, hence a
+  minor version, and enters with a concrete use case. `Retry` is different: it must re-run the
+  upstream operation, so it wraps `MapCtx` rather than transforming the sequence
 - a public setter for the read-ahead multiplier of ordered parallel steps (`options.readAhead`,
   default 2). Shape if picked up: a `StepOption` taking a multiplier, not an absolute size, so the
   window can never be smaller than the worker count. Use case to wait for: plenty of memory and

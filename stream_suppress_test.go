@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/shults/chunkflow"
+	"github.com/shults/chunkflow/policy"
 	"github.com/shults/chunkflow/seq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -117,7 +118,7 @@ func TestSuppress(t *testing.T) {
 				}
 				return i, nil
 			}).
-			Through(chunkflow.CircuitBreaker[int](2)).
+			Through(policy.CircuitBreaker[int](2)).
 			Collect()
 		require.NoError(t, err, "the breaker would have tripped on the second raw error")
 		assert.Equal(t, []int{9}, res)
