@@ -97,8 +97,8 @@ func WithOnError(fn func(error)) Option {
 }
 
 // Builder binds a context before the element type is known. Obtain one with New and
-// turn it into a Stream with Seq, Seq2 or Chan; each of those is a generic method, so
-// the element type is inferred from the source.
+// turn it into a Stream with Seq, Seq2, SeqErr or Chan; each of those is a generic method,
+// so the element type is inferred from the source.
 type Builder struct {
 	ctx context.Context
 }
@@ -123,9 +123,35 @@ func (b Builder) Seq[T any](seq iter.Seq[T]) Stream[T] {
 	})
 }
 
-// Seq2 wraps a native (value, error) iterator, the inverse of Stream.Seq. Elements
-// whose error is nil still pick up the context error once the context is cancelled.
-func (b Builder) Seq2[T any](seq iter.Seq2[T, error]) Stream[T] {
+// Seq2 wraps a native two-value iterator, such as maps.All or slices.All, as a stream of
+// Entry values: the first value becomes Key, the second Value. For an iterator whose second
+// value is an error, use SeqErr, which turns it into the stream's own error channel instead.
+// The context is checked before every element, as in Seq.
+func (b Builder) Seq2[K, V any](seq iter.Seq2[K, V]) Stream[Entry[K, V]] {
+	return b.stream(func(yield func(result[Entry[K, V]]) bool) {
+		for k, v := range seq {
+			if !yield(result[Entry[K, V]]{value: Entry[K, V]{Key: k, Value: v}, err: b.ctx.Err()}) {
+				return
+			}
+		}
+	})
+}
+
+// Entry is one element of a stream built with Seq2: a key/value pair as yielded by maps.All,
+// slices.All (index and element) or any other iter.Seq2[K, V]. It is plain data with no
+// behaviour, the one exported pair in the package: a map entry has exactly two named sides
+// and never nests, unlike the pairs a Zip would build, which is why Zip takes a callback
+// instead.
+type Entry[K, V any] struct {
+	Key   K
+	Value V
+}
+
+// SeqErr wraps a native (value, error) iterator, the inverse of Stream.Seq: the error of each
+// pair becomes the element's error, so a failing source ends the pipeline exactly like a
+// failing callback. Elements whose error is nil still pick up the context error once the
+// context is cancelled.
+func (b Builder) SeqErr[T any](seq iter.Seq2[T, error]) Stream[T] {
 	return b.stream(func(yield func(result[T]) bool) {
 		for item, err := range seq {
 			if err == nil {

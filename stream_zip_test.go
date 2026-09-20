@@ -58,7 +58,7 @@ func TestStream_Zip(t *testing.T) {
 	})
 
 	t.Run("an error on the right is forwarded and the left value waits for the next right value", func(t *testing.T) {
-		right := chunkflow.New(ctx).Seq2(func(yield func(string, error) bool) {
+		right := chunkflow.New(ctx).SeqErr(func(yield func(string, error) bool) {
 			_ = yield("a", nil) && yield("", errBoom) && yield("b", nil)
 		})
 		var got []string

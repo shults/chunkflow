@@ -10,7 +10,7 @@ order, batching with a size and a time bound, retries and circuit breaking. Pipe
 end to end and read left to right, because they are built on Go 1.27 generic methods.
 
 ```go
-err := chunkflow.New(ctx).Chan(events).                   // any iter.Seq, iter.Seq2 or channel
+err := chunkflow.New(ctx).Chan(events).                   // any iter.Seq, iter.Seq2, (T, error) iterator or channel
     MapCtx(enrich, chunkflow.WithParallel(8)).            // I/O on 8 workers, results in source order
     Through(policy.CircuitBreaker[Enriched](5)).          // tolerate a flaky dependency, trip on 5 in a row
     ChunkTimeout[[]Enriched](100, 30*time.Millisecond).   // batches of 100, or whatever arrived in 30ms
@@ -32,8 +32,8 @@ err := chunkflow.New(ctx).Chan(events).                   // any iter.Seq, iter.
 - **Bounded by construction.** Nothing runs until a terminal pulls, and nothing is buffered
   except what you asked for: a chunk's size, a pool's window. Allocations are constant in the
   stream's length; see [BENCHMARK.md](BENCHMARK.md) for the numbers.
-- **Native in, native out.** Sources are `iter.Seq`, `iter.Seq2[T, error]` or channels; `Seq()`
-  hands the pipeline back as an iterator. Everything that produces or consumes Go iterators
+- **Native in, native out.** Sources are `iter.Seq`, `iter.Seq2` (as `Entry` key/value pairs),
+  `iter.Seq2[T, error]` or channels; `Seq()` hands the pipeline back as an iterator. Everything that produces or consumes Go iterators
   already works with it.
 - **Extensible on one seam.** `Transform` exposes the raw `(value, error)` sequence and `Suppress`
   marks an error as tolerated. The `policy` and `step` sub-packages are written on that and nothing
@@ -361,8 +361,9 @@ fmt.Println(users, err) // [{7 ann} {8 bob}] <nil>
 
 ## Iterators in and out
 
-`New(ctx).Seq(...)` wraps any `iter.Seq[T]`, `Seq2` any `iter.Seq2[T, error]` such as a database
-cursor, `Chan` a receive channel. `Seq()` on a stream returns `iter.Seq2[T, error]` for a plain
+`New(ctx).Seq(...)` wraps any `iter.Seq[T]`; `Seq2` any two-value iterator such as `maps.All` or
+`slices.All`, as a stream of `Entry{Key, Value}`; `SeqErr` an `iter.Seq2[T, error]` such as a
+database cursor, whose errors become the stream's errors; `Chan` a receive channel. `Seq()` on a stream returns `iter.Seq2[T, error]` for a plain
 `range` loop, and `Transform` lets a function rewrite that raw sequence and hand it back as a
 stream with the same context and options. The `seq` sub-package has the usual generators
 (`Items`, `Range`, `Numbers`, `Repeat`, `Iterate`) as plain `iter.Seq`, so they work with
@@ -379,7 +380,8 @@ through `Opts` on the stream or on the individual `*Ctx` call.
 | --- | --- |
 | `New(ctx)` | Starts a `Stream` bound to `ctx`. |
 | `.Seq(iter.Seq[T])` | Wraps a native iterator. The context is checked before every element. |
-| `.Seq2(iter.Seq2[T, error])` | Wraps a `(value, error)` iterator, the inverse of `Stream.Seq()`. |
+| `.Seq2(iter.Seq2[K, V])` | Wraps a two-value iterator (`maps.All`, `slices.All`) as `Stream[Entry[K, V]]`. |
+| `.SeqErr(iter.Seq2[T, error])` | Wraps a `(value, error)` iterator, the inverse of `Stream.Seq()`; the errors become the stream's errors. |
 | `.Chan(<-chan T)` | Reads a channel until it is closed or the context is cancelled. Single-use; stopping early does not close or drain the channel. |
 
 Generators in `github.com/shults/chunkflow/seq` return plain `iter.Seq[T]`:

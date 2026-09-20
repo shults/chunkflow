@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -204,7 +206,7 @@ func ExampleStream_Seq() {
 	// tolerated 3
 }
 
-func ExampleBuilder_Seq2() {
+func ExampleBuilder_SeqErr() {
 	ctx := context.Background()
 
 	// A (value, error) iterator, e.g. wrapping a database cursor.
@@ -217,9 +219,23 @@ func ExampleBuilder_Seq2() {
 		yield("", errors.New("connection lost"))
 	}
 
-	got, err := chunkflow.New(ctx).Seq2(rows).Collect()
+	got, err := chunkflow.New(ctx).SeqErr(rows).Collect()
 	fmt.Println(got, err)
 	// Output: [alice bob] connection lost
+}
+
+func ExampleBuilder_Seq2() {
+	ctx := context.Background()
+
+	// A map streams as Entry values; maps.All is a plain iter.Seq2[K, V].
+	stock := map[string]int{"apples": 3, "pears": 0, "plums": 7}
+	inStock, err := chunkflow.New(ctx).Seq2(maps.All(stock)).
+		Filter(func(e chunkflow.Entry[string, int]) bool { return e.Value > 0 }).
+		Map(func(e chunkflow.Entry[string, int]) string { return e.Key }).
+		Collect()
+	slices.Sort(inStock) // map order is random
+	fmt.Println(inStock, err)
+	// Output: [apples plums] <nil>
 }
 
 func ExampleStream_Through() {

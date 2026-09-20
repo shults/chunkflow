@@ -148,7 +148,7 @@ func TestStream_NoGoroutineLeaks(t *testing.T) {
 				}
 
 				_, err := chunkflow.
-					New(ctx).Seq2(src).
+					New(ctx).SeqErr(src).
 					MapCtx(blockUntilCancelled[int], tc.opts...).
 					Collect()
 

@@ -45,7 +45,7 @@ func TestStream_Concat(t *testing.T) {
 	t.Run("is fail-fast without a breaker and does not touch later streams", func(t *testing.T) {
 		secondPulled := 0
 		second := chunkflow.New(ctx).Seq(seq.Items(9)).Tap(func(int) { secondPulled++ })
-		res, err := chunkflow.Concat(chunkflow.New(ctx).Seq2(errAfter(2, errBoom)), second).Collect()
+		res, err := chunkflow.Concat(chunkflow.New(ctx).SeqErr(errAfter(2, errBoom)), second).Collect()
 		require.ErrorIs(t, err, errBoom)
 		assert.Equal(t, []int{0, 1}, res)
 		assert.Equal(t, 0, secondPulled)
@@ -211,7 +211,7 @@ func TestStream_Merge(t *testing.T) {
 	t.Run("is fail-fast without a breaker", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
 		_, err := chunkflow.Merge(
-			chunkflow.New(ctx).Seq2(errAfter(1, errBoom)),
+			chunkflow.New(ctx).SeqErr(errAfter(1, errBoom)),
 			chunkflow.New(ctx).Seq(seq.Numbers(0)), // infinite: must be released
 		).Collect()
 		require.ErrorIs(t, err, errBoom)

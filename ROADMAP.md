@@ -10,7 +10,7 @@ with the reason, so the question is not reopened by accident.
 - Safety net: CI (gofmt, vet, golangci-lint, race tests on 1.27.x and stable, govulncheck), a
   benchstat job on pull requests, protected `master`, `Makefile` + pre-commit hook, `goleak` in
   every concurrent test, 100% statement coverage, runnable `Example*` for every public operation.
-- One stream type, `New(ctx)` with `Seq`, `Seq2`, `Chan`; `Option` / `StepOption`; `WithParallel`
+- One stream type, `New(ctx)` with `Seq`, `Seq2` (key/value as `Entry`), `SeqErr`, `Chan`; `Option` / `StepOption`; `WithParallel`
   ordered by default with `WithUnordered()`; `WithOnError`.
 - Error model: errors as elements, terminals stop at the first fatal one, `Suppress` marks a
   tolerated error, `ErrSuppressed`, `ErrPanic`, `ErrEmpty`. `First` / `Last` return `(T, error)`.
@@ -51,10 +51,6 @@ Ideas without a decision. They enter only with a concrete use case.
   committed; CI fails when the generated listing differs from the committed one, so a change to
   the API has to be deliberate in the same PR. Removed lines are breaking, added ones are a minor.
   Zero dependencies, seconds in CI. Also: report the `apidiff` bug upstream with the repro
-- **key/value sources**: `maps.All(m)` is an `iter.Seq2[K, V]`, but the builder's `Seq2` reads a
-  `Seq2` as `(value, error)`, so a map needs a five-line adapter to a `struct{K; V}` sequence. A
-  `seq.Entries(m)` would export an `Entry[K, V]` type; an example of the adapter is the cheaper
-  answer until someone asks
 - **more policies** in `policy`, e.g. `Tolerate(func(error) bool)` on a stream, an in-stream error
   observer, a breaker with a time window. Each is additive and enters with a use case
 - **`step`**: a third callback shape (`func(ctx, T) error` for `TapCtx` / `ForEachCtx`) is ten more

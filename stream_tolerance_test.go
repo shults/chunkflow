@@ -132,8 +132,8 @@ func TestStream_ErrorsFlowThroughIntermediateStages(t *testing.T) {
 		assert.Equal(t, []int{0, 1, 5, 6, 7, 8, 9}, res)
 	})
 
-	t.Run("suppressed errors survive a round trip through Seq and New().Seq2", func(t *testing.T) {
-		res, err := chunkflow.New(ctx).Seq2(tolerant(ctx).Seq()).Collect()
+	t.Run("suppressed errors survive a round trip through Seq and New().SeqErr", func(t *testing.T) {
+		res, err := chunkflow.New(ctx).SeqErr(tolerant(ctx).Seq()).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 1, 5, 6, 7, 8, 9}, res)
 	})

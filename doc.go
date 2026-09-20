@@ -22,8 +22,10 @@
 //		Chunk[[]Row](500).
 //		ForEachCtx(insertBatch)
 //
-// New(ctx) binds the context first and lets the source pick the element type: Seq wraps an iter.Seq, Seq2 an iter.Seq2[T, error] (the inverse
-// of Stream.Seq), Chan a receive channel.
+// New(ctx) binds the context first and lets the source pick the element type: Seq wraps an
+// iter.Seq, Seq2 any two-value iterator such as maps.All as a stream of Entry{Key, Value},
+// SeqErr an iter.Seq2[T, error] (the inverse of Stream.Seq, its errors become the stream's),
+// Chan a receive channel.
 //
 // # Type-changing operations
 //
