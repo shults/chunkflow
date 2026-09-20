@@ -23,6 +23,13 @@ new convention is introduced or an old one is changed; a convention without a re
 - **Names come from the standard library when std has the operation**: `Concat` (`slices.Concat`),
   `Compact` (`slices.Compact`), `Seq` / `Seq2` (`iter`). *Why:* a reader who knows std knows the
   semantics without opening godoc.
+- **`Zip` takes a callback and there is no tuple type.** `Zip(other, fn)` hands both values to fn
+  and emits what fn returns; a third source is another `Zip` whose fn extends the struct the first
+  one built. *Why:* Go cannot grow a struct per zip level, so a generic `Pair` ends in
+  `p.First.First.Second` after three sources, while a callback names the fields on the first
+  step and keeps naming them. `Zip` is a method, not a function, because a generic method can
+  introduce `O` and `R` and infer them from the arguments, so unlike `CircuitBreaker` no type
+  argument is spelled out.
 - **`Merge` vs `Concat`**: `Concat` is sequential and deterministic, `Merge` is a concurrent fan-in
   with interleaved order. Not `MergeOrdered` / `MergeUnordered`: "ordered merge" reads as the
   merge-sort step over sorted inputs.
@@ -98,7 +105,11 @@ new convention is introduced or an old one is changed; a convention without a re
 - **Minimal exported surface.** No struct is exported to carry internal state (the breaker's
   suppressed-error struct is private; only the `ErrSuppressed` sentinel is public). An exported type
   is a one-way door: adding one later is free, removing one is a breaking change.
-- **Rule of three.** Do not generalise from one case. `policy.CircuitBreaker` stays the only policy
+- **Rule of three.** Do not generalise from one case; it applies to exported names and
+  abstractions, where a wrong guess is a breaking change to undo. It does not apply to private
+  helpers: a long function is split when it stops fitting in one head, and a helper used once is
+  fine when it names a step (`mergeCtx`, `chain`, `neverSuppressed` were all extracted for size,
+  not for reuse). `policy.CircuitBreaker` stays the only policy
   until a second one has a use case; `Zip3` is not added until someone needs it; there is no `Distinct`
   because a global "seen" set belongs to the user's store, not inside the pipeline
   (see `ExampleStream_Chunk_deduplication`).

@@ -3,6 +3,7 @@ package chunkflow_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
 	"testing"
 	"time"
@@ -85,6 +86,14 @@ func BenchmarkOp_ReduceBy10Keys(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_, _ = benchSource(ctx).ReduceBy(func(i int) int { return i % 10 }, 0, func(n, _ int) int { return n + 1 })
+	}
+}
+
+func BenchmarkOp_Zip(b *testing.B) {
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = benchSource(ctx).Zip(benchSource(ctx), func(a, c int) int { return a + c }).Drain()
 	}
 }
 
@@ -206,6 +215,34 @@ func BenchmarkIO_Skewed_Parallel8_Ordered(b *testing.B) {
 }
 func BenchmarkIO_Skewed_Parallel8_Unordered(b *testing.B) {
 	benchIO(b, ioSkewed, chunkflow.WithParallel(8), chunkflow.WithUnordered())
+}
+
+// Break-even of a pool against a sequential stage as the callback's CPU cost grows. spin burns
+// CPU instead of sleeping, so the workers compete for cores like real work does.
+
+func spin(d time.Duration) {
+	if d == 0 {
+		return
+	}
+	end := time.Now().Add(d)
+	for time.Now().Before(end) { // busy wait is the point
+	}
+}
+
+func BenchmarkPool_BreakEven(b *testing.B) {
+	ctx := context.Background()
+	const n = 2_000
+	for _, cost := range []time.Duration{0, time.Microsecond, 5 * time.Microsecond, 20 * time.Microsecond, 100 * time.Microsecond} {
+		work := func(_ context.Context, i int) (int, error) { spin(cost); return i, nil }
+		for _, par := range []int{1, 8} {
+			b.Run(fmt.Sprintf("%v/par%d", cost, par), func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					_ = chunkflow.New(ctx).Seq(seq.Range(0, n)).MapCtx(work, chunkflow.WithParallel(par)).Drain()
+				}
+			})
+		}
+	}
 }
 
 // Fan-in: four sources of benchN/4 each, concurrently (Merge) and one after another (Concat).

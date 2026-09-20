@@ -146,6 +146,7 @@ Lazy; nothing runs until a terminal pulls. Each `*Ctx` variant takes a callback 
 | `TakeWhile` / `SkipWhile` | `TakeWhile(func(T) bool)` · `SkipWhile(func(T) bool)`, `*Ctx` variants | Stop / start emitting at the first `false`; `SkipWhile` stops evaluating afterwards. |
 | `CompactFunc` | `CompactFunc(func(a, b T) bool)` | Drops **consecutive** duplicates in O(1) memory; input must be sorted or grouped for a global dedup. |
 | `Chunk` | `Chunk[R []T](size)` | Groups values into slices of `size`; the last one may be shorter. Errors pass through, the partial chunk is kept. |
+| `Zip` / `ZipCtx` | `Zip[O, R](other Stream[O], func(T, O) R)` · `ZipCtx[O, R](other, func(ctx, T, O) (R, error))` | Pairs values position by position through the callback, ends at the shorter side. Errors pass at their position without consuming a value on the other side. Context merged like `Merge`. A third source is another `Zip` extending your struct. |
 | `Through` | `Through[R](func(Stream[T]) Stream[R])` | Plugs a top-level function into the chain, keeping left-to-right order. |
 | `Opts` | `Opts(...Option)` | Pipeline options for everything downstream. |
 
@@ -269,6 +270,12 @@ about 10 ns per element and a constant handful of allocations per stream, a para
 half a microsecond per element in channel handoffs, so `WithParallel` pays once the callback
 costs more than a few microseconds, which every I/O call does. Eight workers on 200 µs calls give
 a 7.9× speed-up with source order kept, within 1% of `WithUnordered()`.
+
+## Versioning
+
+Pre-1.0. A patch release changes no exported API; a minor release adds API or breaks it, and every
+break is listed in [CHANGELOG.md](CHANGELOG.md) with the migration. `v0.1.0` marks the core API
+having seen real use outside this repository, not a date.
 
 ## Development
 

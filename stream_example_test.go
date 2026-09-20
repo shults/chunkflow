@@ -325,6 +325,21 @@ func ExampleStream_First_find() {
 	// Output: 7 <nil> 7
 }
 
+func ExampleStream_Zip() {
+	ctx := context.Background()
+
+	ids := chunkflow.New(ctx).Seq(seq.Items(7, 8, 9))
+	names := chunkflow.New(ctx).Seq(seq.Items("ann", "bob")) // shorter: the pipeline ends with it
+
+	type user struct {
+		ID   int
+		Name string
+	}
+	users, err := ids.Zip(names, func(id int, name string) user { return user{ID: id, Name: name} }).Collect()
+	fmt.Println(users, err)
+	// Output: [{7 ann} {8 bob}] <nil>
+}
+
 func ExampleErrPanic() {
 	ctx := context.Background()
 

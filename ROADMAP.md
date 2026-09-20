@@ -69,7 +69,10 @@ Goal: fix the shapes that are awkward now, while nobody depends on them, then fr
       to the `policy` sub-package and is written on `Transform` + `Suppress` only, so the seam is
       proven by its first client. The suppressed-error struct lost its counters on the way; the
       breaker wraps its own "failure 2/5" message before calling `Suppress`
-- [ ] tag `v0.1.0`
+- [ ] tag `v0.0.3` (with `CHANGELOG.md`). Not `v0.1.0` yet: the roadmap meant `v0.1.0` as the freeze,
+      and `Transform`, `policy`, `step` and `Zip` are days old with no user but this repository.
+      `v0.1.0` comes when the core API has survived real use and no breaking change is queued;
+      until then additions and breaks are `v0.0.x`, see the versioning note in CHANGELOG.md
 
 ## Phase 4 — Measure the claims
 
@@ -99,23 +102,28 @@ the reference for pure-data overhead.
       the `benchstat` comparison to the job summary, raw outputs as artifacts. Advisory, never
       failing: hosted runners are too noisy for thresholds, `make bench` locally is the arbiter
 
+## Phase 5 — additive extensions (minor versions)
+
+Everything here adds API without changing existing signatures, so it does not wait for a freeze.
+
+- [x] `Zip[O, R](other, fn)` / `ZipCtx` as methods: pairs values positionally through a callback,
+      ends at the shorter side, errors pass at their position, merged context, `iter.Pull` on the
+      other side (the library's first coroutine; goleak on short-circuit, cancellation and a
+      parallel stage behind the pulled side). No `Zip3`: nest and extend a struct in the callback
+
 ## Parking lot
 
 Ideas without a decision. They enter a phase only with a concrete use case.
 
-- `ZipWith(a, b, fn)` — pairs elements positionally, stops at the shorter stream. Design if picked
-  up: `ZipWith` as the only primitive (no `Zip`, no `Pair` in root); `iter.Pull` on the second stream
-  with `defer stop()`; when the second stream ends first, the already-pulled element of the first is
-  dropped (same as the std `iter.Zip` proposal). Errors: pair the i-th *value* of each side, forward
-  errors where they occur; merged context. Tuples, if wanted, go to a `tuple` sub-package (`Pair`,
-  `Triple`, `MakePair`, `MakeTriple`) so `ZipWith(a, b, tuple.MakePair)` works without a root
-  dependency; no `Zip3With`, show the nested form in an example. Tests must include goleak on
-  short-circuit (an unstopped `iter.Pull` leaks a goroutine) and on a parallel stage behind the
-  pulled side
-- key/value sources, depending on the `tuple` decision above:
-  `seq.Pairs(iter.Seq2[K, V]) iter.Seq[tuple.Pair[K, V]]` for any `Seq2` source and
-  `seq.KVPairs(map[K]V)` so callers need not import `maps` (iteration order is random — say so).
-  ~~`KVStream`~~ was dropped: a dedicated type for a handful of helpers is not worth it
+- ~~`ZipWith(a, b, fn)`~~ — shipped as the method `Zip(other, fn)` (Phase 5). ~~`tuple` sub-package
+  (`Pair`, `Triple`, `MakePair`)~~ — dropped: Go cannot grow a struct per zip level, so a generic pair
+  becomes `p.First.First.Second` at three sources while the callback names the fields; and a
+  `Pair` in the root API would be a one-way door for a type with no behaviour
+- key/value sources: `maps.All(m)` is an `iter.Seq2[K, V]`, but the builder's `Seq2` reads a
+  `Seq2` as `(value, error)`, so a map needs a five-line adapter to a `struct{K; V}` sequence. With
+  `tuple` dropped, a `seq.Entries(m)` would export an `Entry[K, V]` type; waits for someone to ask,
+  an example of the adapter is the cheaper answer. ~~`KVStream`~~ was dropped: a dedicated type for
+  a handful of helpers is not worth it
 - **step decorators**: prototyped in `step` as `Decorate(fn, mws...)` / `Decorate3(fn, mws...)`
   over `Middleware func(ctx, call func(ctx) error) error`, with `Retry(attempts, opts...)`,
   `Timeout(d)`, `Tolerate(targets...)`; 100% covered. `Retry` is the middleware and the pacing is

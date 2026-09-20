@@ -1,8 +1,9 @@
 <!-- What changes and why, in a few sentences. Link the ROADMAP.md item if there is one. -->
 
-## Checklist
+## Description
 
-The full list, with reasons, is in [AGENTS.md](../blob/master/AGENTS.md); this is the short form.
+
+## Checklist
 
 - [ ] `make ci` passes locally (gofmt, vet, golangci-lint from `./bin`, `go mod tidy -diff`, race tests, govulncheck)
 - [ ] tests cover the happy path, the edges (empty stream, short-circuit, cancelled context) and the error path; anything that starts goroutines has `defer goleak.VerifyNone(t)`
