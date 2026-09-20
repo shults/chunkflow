@@ -4,15 +4,21 @@ All notable changes to this module. The format follows [Keep a Changelog](https:
 
 Versioning while the major is 0: a **patch** release changes no exported API (fixes, docs,
 benchmarks); a **minor** release adds API or breaks it, and every break is listed under
-"Breaking" with what a caller has to change. `v0.1.0` is reserved for the moment the core API
-has seen real use outside this repository; until then additions and breaks alike are `v0.0.x`.
+"Breaking" with what a caller has to change. `0.1.0` freezes the core API: from there on a
+break is a deliberate minor bump with a migration note, not a routine.
 
-## [Unreleased]
+## [Unreleased] - to be tagged v0.1.0
 
 ### Added
 
 - `ChunkTimeout[R []T](size, maxWait)`: `Chunk` that also releases a partial chunk once `maxWait`
   has passed since its first value, for sources that trickle. Reads the source on a goroutine.
+
+### Changed
+
+- README rewritten around real use: goals, a `BatchEventSaver` scenario with `Push` / `Stop` /
+  `SetOnError` over an injected store (runnable as `Example_batchEventSaver`), then one section per
+  concern with examples taken from the tests, and the API tables last.
 
 ## [0.0.3] - 2026-09-20
 
