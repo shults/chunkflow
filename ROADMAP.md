@@ -38,8 +38,10 @@ with the reason, so the question is not reopened by accident.
 The core API freeze. After this tag a breaking change is a minor bump with a migration note in
 CHANGELOG.md until v1; additions are minors too.
 
-- [ ] README rewritten around real use (`BatchEventSaver`), `ChunkTimeout` in the changelog as
-      the last addition before the tag
+- [x] README rewritten around real use (`BatchEventSaver`, runnable as `Example_batchEventSaver`),
+      `ChunkTimeout` in the changelog
+- [x] the last breaking change before the freeze: `Seq2` means any two-value iterator (as `Entry`),
+      the fallible constructor is `SeqErr`
 - [ ] tag `v0.1.0`, then `go mod download github.com/shults/chunkflow@v0.1.0` so pkg.go.dev indexes it
 
 ## Parking lot
