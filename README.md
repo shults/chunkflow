@@ -262,6 +262,14 @@ for v, err := range stream.Through(policy.CircuitBreaker[User](5)).Seq() {
   to return", not a failure: it never reaches `WithOnError`, and `errors.Is(err, ErrEmpty)` tells it
   apart from the errors above.
 
+## Performance
+
+Measured, not claimed: [BENCHMARK.md](BENCHMARK.md). The short version: a sequential stage costs
+about 10 ns per element and a constant handful of allocations per stream, a parallel stage about
+half a microsecond per element in channel handoffs, so `WithParallel` pays once the callback
+costs more than a few microseconds, which every I/O call does. Eight workers on 200 µs calls give
+a 7.9× speed-up with source order kept, within 1% of `WithUnordered()`.
+
 ## Development
 
 ```bash
@@ -269,6 +277,7 @@ make setup   # installs golangci-lint and govulncheck into ./bin, enables the gi
 make check   # gofmt, go vet, golangci-lint, go mod tidy -diff — what the hook runs
 make test    # go test -race -shuffle=on
 make ci      # check + test + govulncheck, mirrors the GitHub Actions pipeline
+make bench   # every benchmark 8 times into bench.out, summarised with benchstat
 ```
 
 Design decisions and their reasons are in [CONVENTIONS.md](CONVENTIONS.md), the plan in

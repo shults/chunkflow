@@ -1,9 +1,11 @@
 GOLANGCI_LINT_VERSION ?= v2.13.2
 GOVULNCHECK_VERSION   ?= latest
+BENCH_COUNT           ?= 8
 
 BIN        := $(CURDIR)/bin
 LINT       := $(BIN)/golangci-lint
 VULNCHECK  := $(BIN)/govulncheck
+BENCHSTAT  := $(BIN)/benchstat
 
 .DEFAULT_GOAL := help
 
@@ -15,13 +17,16 @@ help: ## Show this help
 setup: tools hooks ## Install dev tools into ./bin and enable git hooks
 
 .PHONY: tools
-tools: $(LINT) $(VULNCHECK) ## Install golangci-lint and govulncheck into ./bin
+tools: $(LINT) $(VULNCHECK) $(BENCHSTAT) ## Install golangci-lint, govulncheck and benchstat into ./bin
 
 $(LINT):
 	GOBIN=$(BIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 $(VULNCHECK):
 	GOBIN=$(BIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
+$(BENCHSTAT):
+	GOBIN=$(BIN) go install golang.org/x/perf/cmd/benchstat@latest
 
 .PHONY: hooks
 hooks: ## Point git at the versioned hooks in .githooks
@@ -58,6 +63,11 @@ test: ## Run tests with the race detector
 .PHONY: cover
 cover: ## Run tests and print per-function coverage
 	go test -race -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
+
+.PHONY: bench
+bench: $(BENCHSTAT) ## Run every benchmark BENCH_COUNT times into bench.out and summarise with benchstat
+	go test -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -timeout 40m . | tee bench.out
+	$(BENCHSTAT) bench.out
 
 .PHONY: vuln
 vuln: $(VULNCHECK) ## Run govulncheck

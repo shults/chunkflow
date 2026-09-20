@@ -3,3 +3,5 @@ coverage.out
 CLAUDE.md
 bin/
 GEMINI.md
+bench.out
+*.sdr/
