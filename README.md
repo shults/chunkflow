@@ -271,6 +271,12 @@ half a microsecond per element in channel handoffs, so `WithParallel` pays once 
 costs more than a few microseconds, which every I/O call does. Eight workers on 200 µs calls give
 a 7.9× speed-up with source order kept, within 1% of `WithUnordered()`.
 
+## Versioning
+
+Pre-1.0. A patch release changes no exported API; a minor release adds API or breaks it, and every
+break is listed in [CHANGELOG.md](CHANGELOG.md) with the migration. `v0.1.0` marks the core API
+having seen real use outside this repository, not a date.
+
 ## Development
 
 ```bash

@@ -69,7 +69,10 @@ Goal: fix the shapes that are awkward now, while nobody depends on them, then fr
       to the `policy` sub-package and is written on `Transform` + `Suppress` only, so the seam is
       proven by its first client. The suppressed-error struct lost its counters on the way; the
       breaker wraps its own "failure 2/5" message before calling `Suppress`
-- [ ] tag `v0.1.0`
+- [ ] tag `v0.0.3` (with `CHANGELOG.md`). Not `v0.1.0` yet: the roadmap meant `v0.1.0` as the freeze,
+      and `Transform`, `policy`, `step` and `Zip` are days old with no user but this repository.
+      `v0.1.0` comes when the core API has survived real use and no breaking change is queued;
+      until then additions and breaks are `v0.0.x`, see the versioning note in CHANGELOG.md
 
 ## Phase 4 — Measure the claims
 
