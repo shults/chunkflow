@@ -87,7 +87,7 @@ func TestStream_ChunkTimeout(t *testing.T) {
 			_ = yield(1, nil) && yield(2, nil) && yield(0, errBoom) && yield(3, nil)
 		}
 		var got []string
-		for v, err := range chunkflow.New(ctx).Seq2(src).ChunkTimeout[[]int](5, time.Hour).
+		for v, err := range chunkflow.New(ctx).SeqErr(src).ChunkTimeout[[]int](5, time.Hour).
 			Through(policy.CircuitBreaker[[]int](100)).Seq() {
 			if err != nil {
 				got = append(got, "err")
@@ -100,7 +100,7 @@ func TestStream_ChunkTimeout(t *testing.T) {
 
 	t.Run("a fatal error ends the stream", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
-		res, err := chunkflow.New(ctx).Seq2(errAfter(3, errBoom)).ChunkTimeout[[]int](2, time.Hour).Collect()
+		res, err := chunkflow.New(ctx).SeqErr(errAfter(3, errBoom)).ChunkTimeout[[]int](2, time.Hour).Collect()
 		require.ErrorIs(t, err, errBoom)
 		assert.Equal(t, [][]int{{0, 1}}, res, "the partial chunk [2] is lost with the fatal error, as with Chunk")
 	})
@@ -167,7 +167,7 @@ func TestStream_ChunkTimeout(t *testing.T) {
 		cctx, cancel := context.WithCancel(ctx)
 		silent := func(yield func(int, error) bool) { <-cctx.Done() } // ends without yielding anything
 		go func() { time.Sleep(20 * time.Millisecond); cancel() }()
-		_, err := chunkflow.New(cctx).Seq2(silent).ChunkTimeout[[]int](10, time.Hour).Collect()
+		_, err := chunkflow.New(cctx).SeqErr(silent).ChunkTimeout[[]int](10, time.Hour).Collect()
 		require.ErrorIs(t, err, context.Canceled, "the feeder exited without emitting; the operator itself must say so")
 	})
 

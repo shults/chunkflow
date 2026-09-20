@@ -101,7 +101,7 @@ func TestStream_Ordered(t *testing.T) {
 		}
 
 		var got []string
-		for v, err := range chunkflow.New(ctx).Seq2(src).
+		for v, err := range chunkflow.New(ctx).SeqErr(src).
 			MapCtx(func(_ context.Context, i int) (int, error) {
 				jitter()
 				if i == 7 {
@@ -248,7 +248,7 @@ func TestStream_Unordered(t *testing.T) {
 		}
 		// Upstream errors bypass the workers and go straight to the output buffer (capacity 4).
 		// One is consumed, four sit in the buffer, the sixth yield blocks inside the feeder.
-		for _, err := range chunkflow.New(ctx).Seq2(src).
+		for _, err := range chunkflow.New(ctx).SeqErr(src).
 			MapCtx(func(_ context.Context, i int) (int, error) { return i, nil }, chunkflow.WithParallel(4), chunkflow.WithUnordered()).
 			Seq() {
 			require.ErrorIs(t, err, boom)

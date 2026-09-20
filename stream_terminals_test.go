@@ -45,7 +45,7 @@ func TestStream_Exec(t *testing.T) {
 	t.Run("returns the first upstream error and stops consuming", func(t *testing.T) {
 		var pulled int
 		err := chunkflow.
-			New(ctx).Seq2(errAfter(3, errBoom)).
+			New(ctx).SeqErr(errAfter(3, errBoom)).
 			Map(func(i int) int { pulled++; return i }).
 			Drain()
 		require.ErrorIs(t, err, errBoom)
@@ -101,7 +101,7 @@ func TestStream_Reduce(t *testing.T) {
 	})
 
 	t.Run("returns the partial accumulator together with an upstream error", func(t *testing.T) {
-		total, err := chunkflow.New(ctx).Seq2(errAfter(3, errBoom)).Reduce(0, sum) // 0+1+2
+		total, err := chunkflow.New(ctx).SeqErr(errAfter(3, errBoom)).Reduce(0, sum) // 0+1+2
 		require.ErrorIs(t, err, errBoom)
 		assert.Equal(t, 3, total)
 	})
@@ -191,9 +191,9 @@ func TestStream_PredicateErrors(t *testing.T) {
 	})
 
 	t.Run("AllCtx and AnyCtx return upstream errors", func(t *testing.T) {
-		_, err := chunkflow.New(ctx).Seq2(errAfter(2, errBoom)).AllCtx(func(context.Context, int) (bool, error) { return true, nil })
+		_, err := chunkflow.New(ctx).SeqErr(errAfter(2, errBoom)).AllCtx(func(context.Context, int) (bool, error) { return true, nil })
 		require.ErrorIs(t, err, errBoom)
-		_, err = chunkflow.New(ctx).Seq2(errAfter(2, errBoom)).AnyCtx(func(context.Context, int) (bool, error) { return false, nil })
+		_, err = chunkflow.New(ctx).SeqErr(errAfter(2, errBoom)).AnyCtx(func(context.Context, int) (bool, error) { return false, nil })
 		require.ErrorIs(t, err, errBoom)
 	})
 
@@ -210,7 +210,7 @@ func TestStream_PredicateErrors(t *testing.T) {
 		} {
 			t.Run(name, func(t *testing.T) {
 				// predicate fails on 3; upstream source fails after 6 items
-				res, err := chunkflow.New(ctx).Seq2(errAfter(6, errBoom)).
+				res, err := chunkflow.New(ctx).SeqErr(errAfter(6, errBoom)).
 					FilterCtx(failOn(3), opts...).
 					Through(policy.CircuitBreaker[int](100)).
 					Collect()
@@ -295,7 +295,7 @@ func TestStream_FailFastStopsEveryStage(t *testing.T) {
 	// source: 0,1,2, error, 3,4,... — keeps producing after the error.
 	// pulled is atomic because parallel stages read the source from a feeder goroutine.
 	newSource := func(pulled *atomic.Int32) chunkflow.Stream[int] {
-		return chunkflow.New(ctx).Seq2(func(yield func(int, error) bool) {
+		return chunkflow.New(ctx).SeqErr(func(yield func(int, error) bool) {
 			for i := 0; ; i++ {
 				pulled.Add(1)
 				var e error
@@ -390,7 +390,7 @@ func TestStream_ReduceBy(t *testing.T) {
 	})
 
 	t.Run("error returns the map built so far", func(t *testing.T) {
-		groups, err := chunkflow.New(ctx).Seq2(errAfter(3, errBoom)).ReduceBy(parity, nil, appendInt) // 0,1,2 then boom
+		groups, err := chunkflow.New(ctx).SeqErr(errAfter(3, errBoom)).ReduceBy(parity, nil, appendInt) // 0,1,2 then boom
 		require.ErrorIs(t, err, errBoom)
 		assert.Equal(t, map[string][]int{"even": {0, 2}, "odd": {1}}, groups)
 	})

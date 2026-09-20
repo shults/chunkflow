@@ -51,7 +51,7 @@ func TestStream_Compact(t *testing.T) {
 		}
 		var values []int
 		var suppressed int
-		for v, err := range chunkflow.New(ctx).Seq2(src).Through(chunkflow.Compact).Through(policy.CircuitBreaker[int](100)).Seq() {
+		for v, err := range chunkflow.New(ctx).SeqErr(src).Through(chunkflow.Compact).Through(policy.CircuitBreaker[int](100)).Seq() {
 			if err != nil {
 				require.ErrorIs(t, err, chunkflow.ErrSuppressed)
 				suppressed++
@@ -64,7 +64,7 @@ func TestStream_Compact(t *testing.T) {
 	})
 
 	t.Run("is fail-fast without a breaker", func(t *testing.T) {
-		res, err := chunkflow.New(ctx).Seq2(errAfter(3, errBoom)).Through(chunkflow.Compact).Collect()
+		res, err := chunkflow.New(ctx).SeqErr(errAfter(3, errBoom)).Through(chunkflow.Compact).Collect()
 		require.ErrorIs(t, err, errBoom)
 		assert.Equal(t, []int{0, 1, 2}, res)
 	})

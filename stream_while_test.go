@@ -47,7 +47,7 @@ func TestStream_TakeWhile(t *testing.T) {
 			}
 			yield(0, errBoom) // never reached: TakeWhile stops on 3
 		}
-		res, err := chunkflow.New(ctx).Seq2(src).TakeWhile(func(i int) bool { return i < 3 }).Collect()
+		res, err := chunkflow.New(ctx).SeqErr(src).TakeWhile(func(i int) bool { return i < 3 }).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{1, 2}, res)
 	})

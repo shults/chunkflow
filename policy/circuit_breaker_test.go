@@ -198,7 +198,7 @@ func TestCircuitBreaker(t *testing.T) {
 		assert.Len(t, res, 90)
 	})
 
-	t.Run("directly after an erroring Seq2 source", func(t *testing.T) {
+	t.Run("directly after an erroring SeqErr source", func(t *testing.T) {
 		src := func(yield func(int, error) bool) {
 			for i := range 6 {
 				var e error
@@ -210,7 +210,7 @@ func TestCircuitBreaker(t *testing.T) {
 				}
 			}
 		}
-		res, err := chunkflow.New(ctx).Seq2(src).Through(policy.CircuitBreaker[int](2)).Collect()
+		res, err := chunkflow.New(ctx).SeqErr(src).Through(policy.CircuitBreaker[int](2)).Collect()
 		require.NoError(t, err)
 		assert.Equal(t, []int{0, 2, 4, 5}, res)
 	})

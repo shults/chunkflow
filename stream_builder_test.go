@@ -2,6 +2,9 @@ package chunkflow_test
 
 import (
 	"context"
+	"maps"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -65,13 +68,36 @@ func TestIoBuilder(t *testing.T) {
 		require.ErrorIs(t, err, context.Canceled)
 	})
 
-	t.Run("Seq2 keeps source errors and adds the context error to clean elements", func(t *testing.T) {
+	t.Run("Seq2 streams key/value pairs as Entry", func(t *testing.T) {
+		m := map[string]int{"a": 1, "b": 2}
+		entries, err := chunkflow.New(ctx).Seq2(maps.All(m)).Collect()
+		require.NoError(t, err)
+		slices.SortFunc(entries, func(x, y chunkflow.Entry[string, int]) int { return strings.Compare(x.Key, y.Key) })
+		assert.Equal(t, []chunkflow.Entry[string, int]{{Key: "a", Value: 1}, {Key: "b", Value: 2}}, entries)
+
+		indexed, err := chunkflow.New(ctx).Seq2(slices.All([]string{"x", "y"})).Collect()
+		require.NoError(t, err)
+		assert.Equal(t, []chunkflow.Entry[int, string]{{Key: 0, Value: "x"}, {Key: 1, Value: "y"}}, indexed, "slices.All gives index/element")
+
+		empty, err := chunkflow.New(ctx).Seq2(maps.All(map[int]int{})).Collect()
+		require.NoError(t, err)
+		assert.Empty(t, empty)
+	})
+
+	t.Run("Seq2 attaches the context error once cancelled", func(t *testing.T) {
 		cctx, cancel := context.WithCancel(ctx)
 		cancel()
-		_, err := chunkflow.New(cctx).Seq2(errAfter(3, errBoom)).Collect()
+		_, err := chunkflow.New(cctx).Seq2(maps.All(map[int]int{1: 1})).Collect()
+		require.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("SeqErr keeps source errors and adds the context error to clean elements", func(t *testing.T) {
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err := chunkflow.New(cctx).SeqErr(errAfter(3, errBoom)).Collect()
 		require.ErrorIs(t, err, context.Canceled, "the first element is clean at the source but the context is gone")
 
-		_, err = chunkflow.New(ctx).Seq2(errAfter(3, errBoom)).Collect()
+		_, err = chunkflow.New(ctx).SeqErr(errAfter(3, errBoom)).Collect()
 		require.ErrorIs(t, err, errBoom)
 	})
 }

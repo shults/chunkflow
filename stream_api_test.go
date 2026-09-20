@@ -185,7 +185,7 @@ func TestStream_AlignedWithStream(t *testing.T) {
 		assert.Equal(t, []error{nil, boom}, errs)
 	})
 
-	t.Run("Seq2 round-trips through Seq", func(t *testing.T) {
+	t.Run("SeqErr round-trips through Seq", func(t *testing.T) {
 		boom := errors.New("boom")
 		src := chunkflow.
 			New(ctx).Seq(seq.Items(1, 2, 3)).
@@ -196,7 +196,7 @@ func TestStream_AlignedWithStream(t *testing.T) {
 				return i * 10, nil
 			})
 
-		res, err := chunkflow.New(ctx).Seq2(src.Seq()).Collect()
+		res, err := chunkflow.New(ctx).SeqErr(src.Seq()).Collect()
 		require.ErrorIs(t, err, boom)
 		assert.Equal(t, []int{10, 20}, res)
 	})

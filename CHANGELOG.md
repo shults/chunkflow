@@ -9,7 +9,17 @@ break is a deliberate minor bump with a migration note, not a routine.
 
 ## [Unreleased] - to be tagged v0.1.0
 
+### Breaking
+
+- The builder's `Seq2` now means what `iter.Seq2` means: any two-value iterator, streamed as
+  `Entry[K, V]{Key, Value}` (`New(ctx).Seq2(maps.All(m))`). The fallible constructor, which takes an
+  `iter.Seq2[T, error]` and is the inverse of `Stream.Seq()`, is renamed `SeqErr`.
+  Migration: replace `.Seq2(` with `.SeqErr(` wherever the iterator's second value is an error;
+  the compiler flags every such site.
+
 ### Added
+
+- `Entry[K, V]` and `Builder.Seq2` for key/value sources: maps, `slices.All`, any `iter.Seq2[K, V]`.
 
 - `ChunkTimeout[R []T](size, maxWait)`: `Chunk` that also releases a partial chunk once `maxWait`
   has passed since its first value, for sources that trickle. Reads the source on a goroutine.

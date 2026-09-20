@@ -21,8 +21,13 @@ new convention is introduced or an old one is changed; a convention without a re
   reference for what the error/context plumbing costs (~2x on pure data, same allocations); if that
   ever matters to someone, that is the starting point for an opt-in type.
 - **Names come from the standard library when std has the operation**: `Concat` (`slices.Concat`),
-  `Compact` (`slices.Compact`), `Seq` / `Seq2` (`iter`). *Why:* a reader who knows std knows the
+  `Compact` (`slices.Compact`), `Seq` / `Seq2` (`iter`, and with the same meaning: `Seq2` is any
+  two-value iterator, not the fallible one; that one is `SeqErr`). *Why:* a reader who knows std knows the
   semantics without opening godoc.
+- **`Entry[K, V]` is the one exported pair, and only for `Seq2`.** A map entry has exactly two
+  sides with canonical names, `Key` and `Value`, and never nests, so a struct beats a callback
+  there; every `iter.Seq2[K, V]` (`maps.All`, `slices.All`) streams as `Entry` without ceremony.
+  It is plain data with no behaviour, which is what the "no exported structs" rule is not about.
 - **`Zip` takes a callback and there is no tuple type.** `Zip(other, fn)` hands both values to fn
   and emits what fn returns; a third source is another `Zip` whose fn extends the struct the first
   one built. *Why:* Go cannot grow a struct per zip level, so a generic `Pair` ends in
@@ -39,7 +44,7 @@ new convention is introduced or an old one is changed; a convention without a re
 - **`Merge` vs `Concat`**: `Concat` is sequential and deterministic, `Merge` is a concurrent fan-in
   with interleaved order. Not `MergeOrdered` / `MergeUnordered`: "ordered merge" reads as the
   merge-sort step over sorted inputs.
-- **Constructors**: the `New(ctx)` builder with `Seq`, `Seq2`, `Chan`. *Why:* the builder binds
+- **Constructors**: the `New(ctx)` builder with `Seq`, `Seq2`, `SeqErr`, `Chan`. *Why:* the builder binds
   the context before the element type is known, and each source kind is one generic method
   instead of one more top-level `New*`. `New` takes no options: `Opts` on the stream is the only
   place for pipeline options, so there is one way to set them and the builder holds nothing but
@@ -91,7 +96,7 @@ new convention is introduced or an old one is changed; a convention without a re
   not infer a call's type parameters from where its result is used (checked; a generic method value
   on an exported config type would infer, but exports a type for nothing).
 - **The extension seam is `iter.Seq2[T, error]`, not an exported element type.** `Transform` speaks
-  the same `(value, error)` pairs as `Seq()` and `Seq2`, so an extension author writes an ordinary
+  the same `(value, error)` pairs as `Seq()` and `SeqErr`, so an extension author writes an ordinary
   `for v, err := range in` loop and no chunkflow type appears in the signature. *Why:* an exported
   `Result[T]` would be a one-way door for a struct that carries no behaviour; the native pair is
   already the representation at every other boundary.
