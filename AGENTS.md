@@ -21,6 +21,7 @@ make check   # gofmt, go vet, golangci-lint, go mod tidy -diff  (the pre-commit 
 make test    # go test -race -shuffle=on
 make cover   # per-function coverage; 100% statement coverage is the working target
 make ci      # check + test + govulncheck, mirrors .github/workflows/ci.yml
+make bench   # every benchmark BENCH_COUNT times, summarised with benchstat (see BENCHMARK.md)
 ```
 
 Prefer wrapping long-running shell steps in `timeout`.

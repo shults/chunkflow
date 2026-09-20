@@ -81,15 +81,23 @@ the reference for pure-data overhead.
 - [x] first numbers (100k ints, `Map`+`Filter`+`Collect`): plain loop 0.23 ms, `memStream` 0.70 ms,
       `Stream` ~1.6–2.2 ms with identical allocations. The per-callback `defer recover()` cost half
       of `Stream`'s time and was replaced by one guard per stage
-- [ ] benchmarks per operator (`Take`, `Skip`, `Chunk`, `Flatten`, `Compact`, `CircuitBreaker`) with
-      `-benchmem`; sequential vs `WithParallel(n)` for `MapCtx` / `FilterCtx`; `Merge` fan-in
-- [ ] profile the remaining gap to `memStream`: wrapper layers (`Map` → `MapCtx`, `Collect` →
-      `ForEach` → `ForEachCtx` → `each`) and `result` copying; decide whether direct implementations of
-      the hot plain variants are worth the duplication
-- [ ] run on a quiet machine with `-count=10`, summarise with `benchstat`, keep the table in
-      `BENCHMARKS.md`
-- [ ] adjust README wording to what the benchmarks show
-- [ ] optional: CI job that runs benchmarks on PRs and comments the `benchstat` diff
+- [x] benchmarks per operator (`Take`, `Skip`, `Chunk`, `Flatten`, `Compact`, `CircuitBreaker`) with
+      `-benchmem`; sequential vs `WithParallel(n)` for `MapCtx` / `FilterCtx`; `Merge` fan-in. Added on
+      the way: ordered vs `WithUnordered()` pools on CPU-trivial and on simulated I/O (uniform and
+      skewed latency), `Transform`, `Suppress`, `ReduceBy`, `step` decorators. `bench_ops_test.go`
+- [x] profile the remaining gap to `memStream`: no hot spot, the cost is the depth of nested
+      `yield` calls. The convenience adapters are ~30% of flat time, the source's `ctx.Err()` +
+      `result` construction ~22%. Decision: **not** duplicating `Map`/`Filter`/`Collect` for a
+      quarter of a 12 ns/element gap; revisit only if someone measures it in a real pipeline
+- [x] `-count=8` (laptop, `powersave` governor, desktop running; GC-heavy cases ±25%, the rest
+      ±1–8%), `benchstat` via `make bench`, tables and interpretation in `BENCHMARK.md`. A quiet
+      machine would tighten the intervals, not move the medians
+- [x] README got a "Performance" section with the rule of thumb (10 ns/element per stage, ~0.5 µs
+      per element for a pool, 7.9× on eight workers with order kept); the "bounded" claim is
+      confirmed by constant allocation counts
+- [x] CI: `.github/workflows/bench.yml` benchmarks the PR head and its base (`count=6`) and writes
+      the `benchstat` comparison to the job summary, raw outputs as artifacts. Advisory, never
+      failing: hosted runners are too noisy for thresholds, `make bench` locally is the arbiter
 
 ## Parking lot
 
@@ -169,6 +177,17 @@ Ideas without a decision. They enter a phase only with a concrete use case.
   The seam (`Transform`, `Suppress`) and the package exist; each new policy is additive, hence a
   minor version, and enters with a concrete use case. `Retry` is different: it must re-run the
   upstream operation, so it wraps `MapCtx` rather than transforming the sequence
+- **two optimisations the benchmarks pointed at**, neither taken yet: `policy.CircuitBreaker`
+  formats a message with `fmt.Errorf` per tolerated error (~430 ns and 5 allocations vs ~125 ns
+  and 2 for a bare `Suppress`); a lazy error type would remove most of it. The ordered pool
+  allocates a ticket and a result channel per element (2 allocations, ~20% over unordered); a ring
+  buffer of size `k` indexed by sequence number would allocate once per stage. Beyond that, the
+  remaining ~500 ns/element is six channel operations per element; only handing over *batches*
+  (double buffering: two slices swapped between feeder and workers, tickets per batch) amortises
+  them, at the price of a window measured in batches, an idle-flush for slow sources, and
+  batch-granular cancellation. It speeds up exactly the workload that should not use a pool
+  (sub-microsecond callbacks) and changes nothing for I/O, so it waits for someone measuring
+  the pool as the bottleneck of a real pipeline
 - a public setter for the read-ahead multiplier of ordered parallel steps (`options.readAhead`,
   default 2). Shape if picked up: a `StepOption` taking a multiplier, not an absolute size, so the
   window can never be smaller than the worker count. Use case to wait for: plenty of memory and
