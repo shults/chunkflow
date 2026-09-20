@@ -9,6 +9,11 @@ has seen real use outside this repository; until then additions and breaks alike
 
 ## [Unreleased]
 
+### Added
+
+- `ChunkTimeout[R []T](size, maxWait)`: `Chunk` that also releases a partial chunk once `maxWait`
+  has passed since its first value, for sources that trickle. Reads the source on a goroutine.
+
 ## [0.0.3] - 2026-09-20
 
 The API polish phase of the roadmap: the shapes that were awkward in `v0.0.2` fixed while nobody

@@ -7,6 +7,7 @@ import (
 	"iter"
 	"slices"
 	"sync"
+	"time"
 )
 
 // Stream is a lazily evaluated, context-aware pipeline over a native iterator whose
@@ -507,6 +508,110 @@ func (s Stream[T]) Chunk[R []T](size int) Stream[R] {
 		}
 		if len(chunk) > 0 {
 			yield(result[R]{value: chunk})
+		}
+	})
+}
+
+// ChunkTimeout is Chunk with a bound on how long a value may wait for its chunk: a chunk is
+// emitted when it reaches size or when maxWait has passed since its first value arrived,
+// whichever comes first. The clock starts with the first value of a chunk, so an idle source
+// never produces empty chunks. It is the batching operator for sources that trickle, such as
+// a channel fed by producers, where Chunk would hold a partial batch until the source speaks
+// again.
+//
+// Unlike Chunk it needs a goroutine: a pull-based iterator only gets control when the source
+// yields, so the source is read on a feeder goroutine and the emitter selects between the next
+// value and the timer. That costs a channel handoff per value, and, as with every operator that
+// reads the source from a goroutine, a consumer that stops early cannot interrupt a source that
+// is blocked inside its own pull; a Chan source blocked on its channel is released when the
+// channel or its context gives up, not by Take. Errors pass through immediately, the partial
+// chunk is kept and its clock keeps running. The stream's cancellation surfaces as an error
+// even when the feeder exits without emitting. size below 1 or a non-positive maxWait emits a
+// single error and ends.
+func (s Stream[T]) ChunkTimeout[R []T](size int, maxWait time.Duration) Stream[R] {
+	if size < 1 {
+		return s.errStream[R](fmt.Errorf("chunkflow: ChunkTimeout(%d, %v): size must be at least 1", size, maxWait))
+	}
+	if maxWait <= 0 {
+		return s.errStream[R](fmt.Errorf("chunkflow: ChunkTimeout(%d, %v): maxWait must be positive", size, maxWait))
+	}
+
+	return s.derive(func(yield func(result[R]) bool) {
+		ctx, cancel := context.WithCancel(s.ctx)
+		defer cancel()
+
+		items := make(chan result[T], size)
+		go func() { // feeder
+			defer close(items)
+			for item := range s.seq {
+				select {
+				case items <- item:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+
+		chunk := make([]T, 0, size)
+		var timer *time.Timer         // armed while a chunk is open
+		var deadline <-chan time.Time // nil while no chunk is open: a nil channel never fires
+		defer func() {
+			if timer != nil {
+				timer.Stop()
+			}
+		}()
+
+		// flush emits the open chunk, if any, and disarms its clock. It never emits an empty
+		// chunk, whoever calls it; the timer is only ever armed by a value, so the deadline
+		// branch below always finds one, but the guard makes that a fact to read, not to prove.
+		flush := func() bool {
+			if timer != nil {
+				timer.Stop()
+				timer, deadline = nil, nil
+			}
+			if len(chunk) == 0 {
+				return true
+			}
+			out := chunk
+			chunk = make([]T, 0, size)
+			return yield(result[R]{value: out})
+		}
+
+		for {
+			select {
+			case item, ok := <-items:
+				if !ok {
+					if !flush() {
+						return
+					}
+					// The feeder bails out silently on ctx.Done(); make sure a cancellation of the
+					// stream context still surfaces to the consumer as an error.
+					if err := s.ctx.Err(); err != nil {
+						yield(result[R]{err: err})
+					}
+					return
+				}
+				if item.err != nil {
+					if !yield(result[R]{err: item.err}) {
+						return
+					}
+					continue
+				}
+				chunk = append(chunk, item.value)
+				switch {
+				case len(chunk) == size:
+					if !flush() {
+						return
+					}
+				case timer == nil:
+					timer = time.NewTimer(maxWait)
+					deadline = timer.C
+				}
+			case <-deadline:
+				if !flush() {
+					return
+				}
+			}
 		}
 	})
 }

@@ -110,6 +110,9 @@ Everything here adds API without changing existing signatures, so it does not wa
       ends at the shorter side, errors pass at their position, merged context, `iter.Pull` on the
       other side (the library's first coroutine; goleak on short-circuit, cancellation and a
       parallel stage behind the pulled side). No `Zip3`: nest and extend a struct in the callback
+- [x] `ChunkTimeout[R []T](size, maxWait)`: `Chunk` with a bound on how long a value waits for its
+      chunk, the batching operator for trickling sources (rill's `Batch`). Own name rather than an
+      option on `Chunk` because it needs a feeder goroutine (see CONVENTIONS.md)
 
 ## Parking lot
 
