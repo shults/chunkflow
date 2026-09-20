@@ -511,6 +511,68 @@ func (s Stream[T]) Chunk[R []T](size int) Stream[R] {
 	})
 }
 
+// Zip pairs the values of this stream with the values of other, position by position, and
+// emits fn(a, b) for each pair. It ends when either side ends; a value already pulled from the
+// longer side is dropped, as in the iter.Zip proposal for the standard library. Errors are not
+// paired: an error on either side is forwarded at its position without consuming a value from
+// the other side, so `Zip` obeys the same rule as every operator, values are what it works on.
+//
+// The result keeps this stream's options and a context merged like Merge does: values and
+// deadline from this stream, cancellation from either. other is driven through iter.Pull, so it
+// runs one coroutine that stops with the pipeline; other may itself be any pipeline, parallel
+// stages included. Pairing is a pure function; for I/O on the pair use ZipCtx or a following
+// MapCtx. A third source is another Zip whose fn extends the struct built by the first:
+//
+//	ids.Zip(users, func(id ID, u User) Row { return Row{ID: id, User: u} }).
+//	    Zip(orders, func(r Row, o Order) Row { r.Order = o; return r })
+func (s Stream[T]) Zip[O, R any](other Stream[O], fn func(a T, b O) R) Stream[R] {
+	return s.ZipCtx(other, func(_ context.Context, a T, b O) (R, error) {
+		return fn(a, b), nil
+	})
+}
+
+// ZipCtx is Zip with a context-aware fn that may fail; a returned error takes the pair's
+// position in the stream and, unless suppressed, ends it at the terminal. The context fn
+// receives is the merged one described on Zip.
+func (s Stream[T]) ZipCtx[O, R any](other Stream[O], fn func(ctx context.Context, a T, b O) (R, error)) Stream[R] {
+	ctx := mergeCtx(s.ctx, other.ctx)
+	return Stream[R]{options: s.options, ctx: ctx, seq: func(yield func(result[R]) bool) {
+		next, stop := iter.Pull(other.seq)
+		defer stop()
+		var inCallback bool
+		defer guardPanics(&inCallback, func(err error) { yield(result[R]{err: err}) })
+		for item := range s.seq {
+			if item.err != nil {
+				if !yield(result[R]{err: item.err}) {
+					return
+				}
+				continue
+			}
+			// The next value from other, forwarding its errors on the way.
+			var partner result[O]
+			for {
+				o, ok := next()
+				if !ok {
+					return // other is exhausted: the pipeline ends, item is dropped
+				}
+				if o.err == nil {
+					partner = o
+					break
+				}
+				if !yield(result[R]{err: o.err}) {
+					return
+				}
+			}
+			inCallback = true
+			val, err := fn(ctx, item.value, partner.value)
+			inCallback = false
+			if !yield(result[R]{value: val, err: err}) {
+				return
+			}
+		}
+	}}
+}
+
 // Through pipes the current stream into an external transformation function.
 // It acts as a structural bridge to maintain fluent API chaining for operations that
 // must be implemented as top-level functions (like Flatten) and for error policies
@@ -899,29 +961,37 @@ func (o options) window() int {
 	return o.readAhead * o.concurrency
 }
 
-// mergeContexts returns a context that carries the values and deadline of the first
-// stream's context and is cancelled as soon as any stream's context is cancelled, with
-// the original cause preserved (see context.Cause). Identical contexts are registered
-// once. Contexts are compared with ==, which holds for every context.Context produced
-// by the standard library.
+// mergeContexts is mergeCtx over the contexts of streams, in order.
 func mergeContexts[T any](streams []Stream[T]) context.Context {
-	head := streams[0].ctx
+	ctxs := make([]context.Context, len(streams))
+	for i, s := range streams {
+		ctxs[i] = s.ctx
+	}
+	return mergeCtx(ctxs...)
+}
+
+// mergeCtx returns a context that carries the values and deadline of the first context and
+// is cancelled as soon as any of them is cancelled, with the original cause preserved (see
+// context.Cause). Identical contexts are registered once. Contexts are compared with ==,
+// which holds for every context.Context produced by the standard library.
+func mergeCtx(ctxs ...context.Context) context.Context {
+	head := ctxs[0]
 	seen := []context.Context{head}
-	for _, s := range streams[1:] {
-		if !slices.Contains(seen, s.ctx) {
-			seen = append(seen, s.ctx)
+	for _, c := range ctxs[1:] {
+		if !slices.Contains(seen, c) {
+			seen = append(seen, c)
 		}
 	}
 	others := seen[1:]
 	if len(others) == 0 {
-		return head // every stream shares the head context; nothing to merge
+		return head // everything shares the head context; nothing to merge
 	}
 
 	merged, cancel := context.WithCancelCause(head)
 	link := func(other context.Context) {
 		context.AfterFunc(other, func() { cancel(context.Cause(other)) })
 	}
-	link(others[0])
+	link(others[0]) // vet's lostcancel wants a guaranteed use; others is never empty here
 	for _, other := range others[1:] {
 		link(other)
 	}

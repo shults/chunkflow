@@ -88,6 +88,14 @@ func BenchmarkOp_ReduceBy10Keys(b *testing.B) {
 	}
 }
 
+func BenchmarkOp_Zip(b *testing.B) {
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = benchSource(ctx).Zip(benchSource(ctx), func(a, c int) int { return a + c }).Drain()
+	}
+}
+
 // Error-path operators: every tenth element fails, nothing trips.
 
 func failEveryTenth(_ context.Context, i int) (int, error) {

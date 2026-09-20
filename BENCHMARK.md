@@ -32,9 +32,15 @@ Sequential, CPU-trivial callbacks, so the number is the plumbing, not the work.
 | `Compact` (runs of 10) | 11.5 | 19 | |
 | `Transform` (identity) | 10.3 | 13 | **the extension seam is free**: same as `Map` |
 | `ReduceBy` (10 keys) | 23.9 | 13 | map lookup and store per element |
+| `Zip` (two 100k sources) | 89.9 | 20 | measured 2026-09-20 after the first table; the other side is driven by `iter.Pull`, and its coroutine switch is ~80 ns per element, nine times a plain stage. Allocations stay constant |
 
-Allocations are constant in the stream length: 11–19 for 100 000 elements, regardless of the
-operator. That is the "bounded" claim in the README, measured. The 2.7× against `memStream` is
+Allocations are constant in the stream length: 11–20 for 100 000 elements, regardless of the
+operator. That is the "bounded" claim in the README, measured. It also means that any allocation
+count that grows with the stream comes from the callbacks, not the pipeline: results travel by
+value, so `return Row{...}` allocates nothing per element, while `return &Row{...}` or returning a
+struct through an interface allocates once per element, in `Zip` as in `Map`. Sometimes that is
+the right call, a large struct mutated by later stages is cheaper to allocate once than to copy
+four times; it is a decision about the data, not about the pipeline. The 2.7× against `memStream` is
 about 12 ns per element per stage in absolute terms; any I/O callback is three to five orders of
 magnitude above that.
 
@@ -153,6 +159,7 @@ Op_Chunk100_Flatten-16                 1.204m ± 13%  876.5Ki B/op   1015 allocs
 Op_Compact-16                          1.147m ±  3%    824 B/op       19 allocs/op
 Op_Transform_Identity-16               1.032m ±  5%    505 B/op       13 allocs/op
 Op_ReduceBy10Keys-16                   2.386m ±  6%    913 B/op       13 allocs/op
+Op_Zip-16                              8.985m ±  2%    888 B/op       20 allocs/op   (separate run, same machine; Op_Identity that run: 976.1µ ± 2%)
 Op_CircuitBreaker_10pctErrors-16       6.484m ± 24%  1.528Mi B/op  50020 allocs/op
 Op_Suppress_10pctErrors-16             2.197m ± 14%  469.3Ki B/op  20010 allocs/op
 Pool_MapCtx_Sequential-16              948.1µ ±  2%    560 B/op       12 allocs/op
