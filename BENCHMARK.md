@@ -29,6 +29,7 @@ Sequential, CPU-trivial callbacks, so the number is the plumbing, not the work.
 | `Skip(n)` of 2n | 7.2 per pulled element | 11 | |
 | `Chunk(100)` | 7.5 | 1 012 | one allocation per chunk, nothing else |
 | `Chunk(100)`·`Flatten` | 12.0 | 1 015 | |
+| `ChunkTimeout(100, 1s)` | 131 | 4 017 | measured 2026-09-20, four runs; the feeder goroutine's channel handoff per value plus a timer per chunk (three extra allocations per chunk). The price of being able to release a partial chunk on a clock |
 | `Compact` (runs of 10) | 11.5 | 19 | |
 | `Transform` (identity) | 10.3 | 13 | **the extension seam is free**: same as `Map` |
 | `ReduceBy` (10 keys) | 23.9 | 13 | map lookup and store per element |
@@ -188,6 +189,7 @@ Op_Compact-16                          1.147m ±  3%    824 B/op       19 allocs
 Op_Transform_Identity-16               1.032m ±  5%    505 B/op       13 allocs/op
 Op_ReduceBy10Keys-16                   2.386m ±  6%    913 B/op       13 allocs/op
 Op_Zip-16                              8.985m ±  2%    888 B/op       20 allocs/op   (separate run, same machine; Op_Identity that run: 976.1µ ± 2%)
+Op_ChunkTimeout100-16                  13.15m          1.095Mi B/op   4017 allocs/op (separate run, count=4; Op_Chunk100 that run: 937.8µ)
 Op_CircuitBreaker_10pctErrors-16       6.484m ± 24%  1.528Mi B/op  50020 allocs/op
 Op_Suppress_10pctErrors-16             2.197m ± 14%  469.3Ki B/op  20010 allocs/op
 Pool_MapCtx_Sequential-16              948.1µ ±  2%    560 B/op       12 allocs/op

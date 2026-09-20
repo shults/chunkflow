@@ -30,6 +30,12 @@ new convention is introduced or an old one is changed; a convention without a re
   step and keeps naming them. `Zip` is a method, not a function, because a generic method can
   introduce `O` and `R` and infer them from the arguments, so unlike `CircuitBreaker` no type
   argument is spelled out.
+- **`Chunk` vs `ChunkTimeout`**, like `Concat` vs `Merge`: the pull-based operator stays free of
+  goroutines and the variant that needs one gets its own name, because a timeout cannot be an
+  option on `Chunk`. A pull-based iterator only runs when the source yields, so a bound on
+  waiting time requires reading the source from a goroutine, with the channel cost and the
+  cancellation semantics that brings; hiding that behind an option would make `Chunk(500)` and
+  `Chunk(500, WithMaxWait(d))` differ by an order of magnitude in cost and in failure modes.
 - **`Merge` vs `Concat`**: `Concat` is sequential and deterministic, `Merge` is a concurrent fan-in
   with interleaved order. Not `MergeOrdered` / `MergeUnordered`: "ordered merge" reads as the
   merge-sort step over sorted inputs.
@@ -140,6 +146,10 @@ new convention is introduced or an old one is changed; a convention without a re
 - `All` on an empty stream is `true`, `Any` is `false` (vacuous truth); `All(p) == !Any(!p)` always.
 - `Take(n)` / `Skip(n)` count values, not errors. `TakeWhile` stops pulling at the first `false`
   and therefore never sees errors that come after it.
+- `Chunk` and `ChunkTimeout` never emit an empty slice: a chunk has at least one value, so
+  `batch[0]` is safe and no empty INSERT or request leaves the pipeline; and an empty flush
+  returns before allocating, so an idle `ChunkTimeout` costs the GC nothing. The one allocation
+  per chunk is the buffer for the next one.
 - `Compact` removes only *adjacent* duplicates (input must be sorted or grouped), in O(1) memory.
 - `ReduceBy` is the only keyed operation and it is a terminal, like `Collect`: terminals may
   materialise, intermediate operators may not (that is why there is no `Distinct` or streaming

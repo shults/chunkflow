@@ -56,6 +56,14 @@ func BenchmarkOp_Chunk100(b *testing.B) {
 	}
 }
 
+func BenchmarkOp_ChunkTimeout100(b *testing.B) {
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = benchSource(ctx).ChunkTimeout[[]int](100, time.Second).Drain()
+	}
+}
+
 func BenchmarkOp_Chunk100_Flatten(b *testing.B) {
 	ctx := context.Background()
 	b.ReportAllocs()

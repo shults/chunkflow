@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/shults/chunkflow"
 	"github.com/shults/chunkflow/policy"
@@ -338,6 +339,29 @@ func ExampleStream_Zip() {
 	users, err := ids.Zip(names, func(id int, name string) user { return user{ID: id, Name: name} }).Collect()
 	fmt.Println(users, err)
 	// Output: [{7 ann} {8 bob}] <nil>
+}
+
+func ExampleStream_ChunkTimeout() {
+	ctx := context.Background()
+
+	// Events trickle in over a channel: three quickly, then a pause, then two more.
+	events := make(chan string)
+	go func() {
+		defer close(events)
+		for _, e := range []string{"a", "b", "c"} {
+			events <- e
+		}
+		time.Sleep(300 * time.Millisecond)
+		for _, e := range []string{"d", "e"} {
+			events <- e
+		}
+	}()
+
+	// Batches of up to 10, but no event waits longer than 30ms for its batch: the first
+	// three go out together long before the pause is over.
+	batches, err := chunkflow.New(ctx).Chan(events).ChunkTimeout[[]string](10, 30*time.Millisecond).Collect()
+	fmt.Println(batches, err)
+	// Output: [[a b c] [d e]] <nil>
 }
 
 func ExampleErrPanic() {
